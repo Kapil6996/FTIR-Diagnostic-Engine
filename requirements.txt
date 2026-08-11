@@ -1,0 +1,13 @@
+torch
+torchvision
+pillow
+scikit-learn
+pandas
+openpyxl
+opencv-python-headless
+PyMuPDF
+selenium
+matplotlib
+joblib
+requests
+pyyaml

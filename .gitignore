@@ -1,0 +1,40 @@
+# Build and Dist folders (Platform specific binaries)
+build/
+dist/
+*.spec
+*.app
+*.exe
+*.pkg
+Maruti_FTIR_Diagnostic_Engine_FullProject.zip
+
+# Runtime data and User generated content
+outputs/
+ftir_records/
+corrections/
+*.xlsx
+*.csv
+pipeline_log.txt
+
+# Heavy training datasets (Provide your own 'data/' folder to retrain)
+data/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+ENV/
+env/
+
+# OS specific files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db

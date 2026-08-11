@@ -1,0 +1,48 @@
+# SBPR Subject Keyword Vocabulary & Feature Hints
+# This file serves as an offline config for extracting text features
+# from the 'Subject' and 'Customer Complaint' columns in FTIR spreadsheets for Stage 2 tree classification.
+
+SBIN201210B00011:
+  description: "Seat frame & interior bracket corrosion / oxidation"
+  keywords:
+    - seat
+    - seat frame
+    - bracket
+    - oxidation
+    - interior
+    - under seat
+    - rust bubble
+    - blister
+
+SBIN202310B06811:
+  description: "Exterior trim, chrome stain, paint peeling & bird droppings"
+  keywords:
+    - white patches
+    - chrome
+    - stain
+    - grill
+    - bumper
+    - scratch
+    - bird drop
+    - bird dropping
+    - paint peeling
+    - external
+    - roughness
+    - discoloration
+    - trim
+
+SBIN202507B07143:
+  description: "Door panels, hinges, body surface rust & hard water (hw) corrosion"
+  keywords:
+    - hard water
+    - hw
+    - door panel
+    - door pannel
+    - hinge
+    - full body
+    - surface rust
+    - weld seam
+    - engine room
+    - dicky
+    - corrosion
+    - panel

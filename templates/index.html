@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust Detection AI</title>
+    <!-- Google Fonts for Modern Typography -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="app-container">
+        <header>
+            <h1>Rust Detection <span class="accent">AI</span></h1>
+            <p>Upload a photo of metal to instantly detect if it contains rust.</p>
+        </header>
+
+        <main>
+            <div class="glass-panel">
+                <!-- Drag and drop zone -->
+                <div id="drop-zone" class="drop-zone">
+                    <input type="file" id="file-input" accept="image/png, image/jpeg, image/jpg" hidden>
+                    <div class="drop-content">
+                        <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                            <polyline points="17 8 12 3 7 8"></polyline>
+                            <line x1="12" y1="3" x2="12" y2="15"></line>
+                        </svg>
+                        <p>Drag & Drop your image here</p>
+                        <span class="or-text">or</span>
+                        <button id="browse-btn" class="btn-primary">Browse Files</button>
+                    </div>
+                </div>
+
+                <!-- Preview and Results Area (Hidden by default) -->
+                <div id="result-area" class="result-area hidden">
+                    <div class="image-preview-container">
+                        <img id="image-preview" src="" alt="Preview">
+                        <div id="loading-spinner" class="spinner-overlay hidden">
+                            <div class="spinner"></div>
+                        </div>
+                    </div>
+                    
+                    <div class="result-details">
+                        <h2 id="prediction-label">Analyzing...</h2>
+                        <div class="confidence-bar-container">
+                            <div class="confidence-label">
+                                <span>Confidence</span>
+                                <span id="confidence-value">0%</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div id="confidence-fill" class="progress-fill"></div>
+                            </div>
+                        </div>
+                        <button id="reset-btn" class="btn-secondary">Test Another Image</button>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Powered by ResNet-34</p>
+        </footer>
+    </div>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+</body>
+</html>
