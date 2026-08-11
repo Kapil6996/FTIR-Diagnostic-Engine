@@ -1,45 +1,45 @@
-# FTIR → SBPR Automated Defect Diagnosis & Fusion Engine
+# Maruti FTIR → SBPR Automated Defect Diagnosis & Fusion Engine
 
-An offline, on-device Python pipeline with a full **Desktop GUI** for automated defect triage and SBPR classification of Automotive Field Technical Investigation Reports (FTIRs). All processing runs locally without any external API calls, ensuring high privacy, reliability, and portability across Mac (Apple Silicon MPS backend) and Windows office workstations (CPU fallback).
+An offline, on-device Python AI pipeline with a full **Desktop GUI** for automated defect triage and SBPR classification of Automotive Field Technical Investigation Reports (FTIRs). All processing runs locally without any external API calls, ensuring high privacy, reliability, and portability across Mac (Apple Silicon MPS backend) and Windows office workstations (CPU fallback).
 
 ---
 
-## Quick Start
+## 🚀 Quick Start
 
+### For Developers (Running from Source)
 ```bash
-# 1. Install dependencies
+# 1. Clone the repository (Requires Git LFS for models)
+git clone https://github.com/Kapil6996/FTIR-Diagnostic-Engine.git
+cd FTIR-Diagnostic-Engine
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Launch the Desktop GUI
+# 3. Launch the Desktop GUI
 python app.py
 ```
 
-### SIFT Maruti Portal (Online Mode Only)
-
-If using **Online mode** to automatically download FTIR attachment photos from Excel hyperlinks, you must log into the **SIFT Maruti platform once** in your default browser before running the app. After that first login, the tool reuses your saved session — no repeated logins needed.
-
-If using **Offline / Cache-Only mode** (the default), no internet or login is required. The pipeline analyzes Excel tabular features and local photos already saved in `ftir_records/`.
+### For End-Users (Running the App)
+Navigate to the `dist/` directory and simply double-click the **`Maruti_FTIR_Diagnostic_Engine.app`** (or `.exe` on Windows). No terminal or Python installation is required!
 
 ---
 
-## Features
+## ✨ Features & Architecture
 
 | Feature | Description |
 | :--- | :--- |
-| **Desktop GUI** | Professional Tkinter/ttk desktop window with high-contrast theme |
-| **Excel Input** | Reads FTIR spreadsheets with auto-header detection |
-| **Stage 1: Rust Filter** | Binary CNN (Rust vs Non-Rust) to gate corrosion defects |
-| **Stage 2: SBPR Fusion** | Dual-model decision fusion (metadata tree + image CNN) |
-| **KPI Dashboard** | Live counters for total rows, rust, non-rust, manual review, faults |
-| **Failure Tracker** | Stage-level error diagnostics (portal, hyperlink, extraction, inference) |
-| **FTIR Photo Browser** | Post-pipeline viewer to browse all FTIRs and their extracted photos |
-| **Manual Review** | Classify flagged uncertain FTIRs with photo gallery and SBPR dropdown |
-| **One-Click Report** | Open generated Excel output directly from the app |
-| **Standalone Executable** | Package into a double-click app via `python build_executable.py` |
+| **Dynamic Scrollable GUI** | Professional Tkinter desktop window that adapts to any screen size. |
+| **Excel Input** | Reads FTIR spreadsheets with auto-header detection. |
+| **Stage 1: Rust Filter** | Binary CNN (Rust vs Non-Rust) to gate corrosion defects. |
+| **Stage 2: SBPR Fusion** | Dual-model decision fusion (metadata tree + image CNN). |
+| **KPI Dashboard** | Live counters for total rows, rust, non-rust, manual review, faults. |
+| **Robust Extraction** | Automatically logs into SIFT Maruti to extract photos via URLs. Features a **Search Fallback Engine** if URLs are broken. |
+| **Multi-Media Support** | Extracts frames and images from PDFs, Videos, and handles multiple photos per FTIR. |
+| **Active Learning Loop** | Operators can report wrong classifications. Corrections are saved to `corrections_db.json` to automatically override future pipeline runs and provide a dataset for retraining. |
 
 ---
 
-## Folder Layout
+## 📂 Folder Layout
 
 ```text
 ftir_sbpr_tool/
@@ -48,63 +48,52 @@ ftir_sbpr_tool/
 ├── requirements.txt         # Offline package requirements
 ├── config/
 │   └── sbpr_keywords.yaml   # SBPR subject keyword vocabulary & feature hints
-├── data/                    # Labeled image & tabular datasets for training
-├── ftir_records/            # Downloaded/cached attachment files per FTIR record
-├── models/                  # Saved model checkpoints (.pth & .joblib)
+├── data/                    # Labeled image & tabular datasets for training (Ignored in Git)
+├── ftir_records/            # Downloaded/cached attachment files per FTIR record (Ignored in Git)
+├── models/                  # Saved model checkpoints (.pth & .joblib) [Tracked via Git LFS]
 ├── outputs/                 # Generated Excel reports
 └── src/                     # Core pipeline modules
     ├── __init__.py
     ├── excel_io.py          # Spreadsheet input loading and output formatting
-    ├── browser_extract.py   # Selenium web extraction (one-time SIFT login)
-    ├── media_normalize.py   # PDF/video/image normalization
+    ├── browser_extract.py   # Selenium web extraction (URL direct + Fallback Search)
+    ├── media_normalize.py   # PDF/video/image normalization & multi-image extraction
     ├── rust_model.py        # Stage 1: Binary vision AI (Rust vs Non-Rust)
     ├── sbpr_features.py     # Stage 2: Tabular & NLP text feature engineering
     ├── sbpr_tree.py         # Stage 2: Decision tree / random forest model
     ├── sbpr_image_model.py  # Stage 2: 3-class vision CNN
     ├── fusion.py            # Stage 2: Decision fusion & review flagging
     ├── pipeline.py          # Master pipeline orchestrator
+    ├── corrections.py       # Active learning loop & JSON database manager
     └── review_viewer.py     # Post-pipeline FTIR browser & manual review windows
 ```
 
 ---
 
-## Pipeline Stages
+## ⚙️ Pipeline Stages
 
 1. **Excel Ingestion** (`src.excel_io`) — Reads FTIR worksheet with record IDs, vehicle metadata, defect keywords, and hyperlinks.
-
-2. **Browser Extraction** (`src.browser_extract`) — Uses Selenium with persistent session cookies from SIFT Maruti. User logs in once; all subsequent FTIR hyperlink downloads are automatic.
-
-3. **Media Normalization** (`src.media_normalize`) — Converts PDFs, videos, and images into normalized RGB pictures for model evaluation.
-
+2. **Browser Extraction** (`src.browser_extract`) — Uses Selenium with persistent session cookies from SIFT Maruti. Attempts direct URL download first. If it fails, falls back to searching the FTIR number in the portal text box.
+3. **Media Normalization** (`src.media_normalize`) — Converts PDFs, videos, and multi-image batches into normalized RGB pictures for model evaluation.
 4. **Stage 1: Rust vs Non-Rust** (`src.rust_model`) — Binary CNN filter. Non-rust FTIRs are logged and skip Stage 2.
-
 5. **Stage 2: SBPR Decision Fusion** (`src.fusion`) — Dual-model verification:
-   - **Metadata Tree** (`src.sbpr_features` + `src.sbpr_tree`) — Evaluates mileage, subject keywords, and complaint text.
+   - **Metadata Tree** (`src.sbpr_tree`) — Evaluates mileage, subject keywords, and complaint text.
    - **Image CNN** (`src.sbpr_image_model`) — 3-class vision classifier on extracted photos.
-   - **Fusion** — If both models agree → confirmed. If they disagree → flagged for manual review.
-
-6. **Output Generation** — Augmented Excel with: `Defect_Type`, `SBPR_Number`, `Reason`, `Confidence`, `Flag_For_Review`, `Pipeline_Status`, `Failure_Stage`, `Failure_Diagnostics`.
-
----
-
-## Standalone Deployment
-
-Package the entire tool into a **double-click executable** for teammates who don't have Python installed:
-
-```bash
-pip install pyinstaller
-python build_executable.py
-```
-
-The generated `dist/Maruti_FTIR_Diagnostic_Engine/` folder contains everything needed. Copy it to a USB stick or share via network — recipients just double-click the executable.
+   - **Fusion** — If models agree → confirmed. If they disagree → flagged for manual review.
+6. **Output Generation** — Augmented Excel with: `Defect_Type`, `SBPR_Number`, `Reason`, `Confidence`, `Flag_For_Review`, and `Failure_Diagnostics`.
 
 ---
 
-## Offline & Cross-Platform
+## 🧑‍💻 How to Upgrade & Build
 
-All PyTorch models use automatic hardware detection:
-- **Apple Silicon Mac** → MPS GPU acceleration
-- **NVIDIA GPU** → CUDA acceleration
-- **Windows/Linux CPU** → Standard CPU fallback
+If you are a colleague taking over the project, you can easily upgrade the models or tweak the logic:
+1. Make your code changes in `src/` or drop new `.pth` weights into `models/`.
+2. Open your terminal in the project directory and run:
+   ```bash
+   python build_executable.py
+   ```
+3. The script will automatically package your new AI weights and Python scripts into a fresh `.app` (Mac) or `.exe` (Windows) in the `dist/` folder!
 
-No internet APIs are called during inference. Everything runs 100% on-device.
+### Git LFS Note
+Because the AI models are large, this repository uses **Git LFS (Large File Storage)**. 
+- If you are pushing new models to GitHub, ensure you have Git LFS installed (`brew install git-lfs` on Mac) and run `git lfs install` before pushing.
+- Standard source code files (`.py`) are pushed normally.
