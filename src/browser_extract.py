@@ -406,19 +406,14 @@ def search_and_extract_ftir(driver: webdriver.Chrome, ftir_no: str, portal_url: 
         )
         time.sleep(2)  # Let JS settle
 
-        # Navigate click-path: Search Menu -> Quick Search
-        logger.info("Attempting to navigate through Search -> Quick Search menus...")
+        # Navigate click-path: Click Quick Search directly
+        logger.info("Attempting to click 'Quick Search' link...")
         try:
-            # 1. Look for 'search' menu bar
-            search_menu = driver.find_element(By.XPATH, "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search') and not(self::input)]")
-            search_menu.click()
-            time.sleep(1)
-            # 2. Look for 'quick search' link
             quick_search = driver.find_element(By.XPATH, "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'quick search')]")
             quick_search.click()
             time.sleep(2)
         except NoSuchElementException:
-            logger.warning("Could not find exact 'Search' -> 'Quick Search' menu path. Trying to find search box anyway.")
+            logger.warning("Could not find 'Quick Search' link. Trying to find search box anyway.")
 
         # Find the first visible text input box
         text_boxes = driver.find_elements(By.XPATH, "//input[@type='text' or not(@type)]")
