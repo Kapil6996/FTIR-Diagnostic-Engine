@@ -174,6 +174,9 @@ def get_driver(
     # Disable pop-up blocker so download dialogs don't interfere
     edge_options.add_argument("--disable-popup-blocking")
 
+    # Enable Performance Logging to capture raw network requests!
+    edge_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+
     try:
         driver = webdriver.Edge(options=edge_options)
         logger.info(f"Edge driver started with profile: {profile_dir}")
@@ -246,14 +249,28 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
     logger.info(f"Navigating to FTIR page: {url}")
     driver.get(url)
 
-    # Give the page time to fully render (JS-heavy portals)
     try:
-        WebDriverWait(driver, _PAGE_TIMEOUT).until(
+        WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
     except TimeoutException:
-        logger.warning(f"Page load timed out for {url}")
+        logger.warning(f"Initial page load timed out for {url}")
 
+    # Detect if we landed on a login page
+    current_url = driver.current_url.lower()
+    if "login" in current_url or "sso" in current_url or "auth" in current_url or len(driver.find_elements(By.CSS_SELECTOR, "input[type='password']")) > 0:
+        logger.info(f"Login screen detected. Waiting up to {_PAGE_TIMEOUT} seconds for manual login...")
+        try:
+            # Wait until the URL changes away from the login page, OR there are no password fields
+            WebDriverWait(driver, _PAGE_TIMEOUT).until(
+                lambda d: "login" not in d.current_url.lower() and len(d.find_elements(By.CSS_SELECTOR, "input[type='password']")) == 0
+            )
+            logger.info("Login appears successful! Re-navigating to the target FTIR page to be safe...")
+            driver.get(url)
+            time.sleep(2)
+        except TimeoutException:
+            logger.error("Login timed out. Proceeding anyway, but extraction will likely fail.")
+            
     # Allow dynamic content to settle
     time.sleep(2)
 
@@ -426,6 +443,42 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
             pass
         finally:
             driver.switch_to.default_content()
+
+    # Strategy N: Network Interception (Performance Logs)
+    # The ultimate backup: if the portal uses JS/React/Canvas to render the images,
+    # they won't exist in the DOM as <img> tags. But they MUST be requested over the network!
+    logger.info("Strategy N: Scanning raw network traffic for thumbnail requests...")
+    try:
+        logs = driver.get_log("performance")
+        for entry in logs:
+            import json
+            try:
+                log_data = json.loads(entry.get("message", "{}"))
+                message = log_data.get("message", {})
+                
+                # Check for Network.requestWillBeSent or Network.responseReceived
+                if message.get("method") in ["Network.requestWillBeSent", "Network.responseReceived"]:
+                    url = ""
+                    if "request" in message.get("params", {}):
+                        url = message["params"]["request"].get("url", "")
+                    elif "response" in message.get("params", {}):
+                        url = message["params"]["response"].get("url", "")
+                        
+                    if url and "ftirweb" in url.lower():
+                        if "ftirwebthumbnail.do" in url.lower():
+                            full_url = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', url, flags=re.IGNORECASE)
+                            if full_url not in seen:
+                                seen.add(full_url)
+                                attachment_urls.append(full_url)
+                                logger.info(f"  [Network Log] Upgraded thumbnail request: {full_url[:80]}...")
+                        elif url not in seen:
+                            seen.add(url)
+                            attachment_urls.append(url)
+                            logger.info(f"  [Network Log] Found file request: {url[:80]}...")
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning(f"Could not read performance logs for network interception: {e}")
 
     guessed_urls = []
     
