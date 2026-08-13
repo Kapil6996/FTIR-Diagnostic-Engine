@@ -822,17 +822,27 @@ def extract_via_response_form(
         # Super-aggressive JS brute-force search
         js_script = """
         function findButton(root) {
-            let elements = Array.from(root.querySelectorAll('button, a, input, img, span, td, div'));
+            let elements = Array.from(root.querySelectorAll('*'));
             elements.reverse(); // Visit deepest children first to avoid clicking giant containers
             for (let el of elements) {
                 if (el.shadowRoot) {
                     let shadowBtn = findButton(el.shadowRoot);
                     if (shadowBtn) return shadowBtn;
                 }
-                let text = (el.innerText || el.value || el.title || el.alt || el.name || '').toLowerCase();
+                
+                // Get all possible text sources
+                let rawText = (el.innerText || el.value || el.title || el.alt || el.name || '').toLowerCase();
+                
+                // NORMALIZE WHITESPACE: Convert all newlines, tabs, and non-breaking spaces to a single space
+                let text = rawText.replace(/\\s+/g, ' ').trim();
+                
                 if (text.includes('response form') || text.includes('go to ftir') || text.includes('ftir response')) {
                     if (el.offsetWidth > 0 || el.offsetHeight > 0) { // Check visibility
-                        return el;
+                        // Only return if it's a clickable-type element to avoid returning the <body>
+                        let tag = el.tagName.toUpperCase();
+                        if (['BUTTON', 'A', 'INPUT', 'IMG', 'SPAN', 'DIV', 'TD', 'LABEL', 'LI'].includes(tag)) {
+                            return el;
+                        }
                     }
                 }
             }
