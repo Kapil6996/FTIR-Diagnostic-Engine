@@ -329,6 +329,29 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
                 seen.add(src)
                 attachment_urls.append(src)
 
+    # Strategy F: Iframe Piercing
+    # Enterprise portals often bury the FTIR details inside a <iframe>.
+    # We must switch into every iframe and scan for attachments!
+    logger.info("Piercing iframes to search for hidden attachments...")
+    iframes = driver.find_elements(By.TAG_NAME, "iframe")
+    for frame in iframes:
+        try:
+            driver.switch_to.frame(frame)
+            for a_tag in driver.find_elements(By.TAG_NAME, "a"):
+                href = a_tag.get_attribute("href")
+                if href and href not in seen and _looks_like_attachment_url(href):
+                    seen.add(href)
+                    attachment_urls.append(href)
+            for img_tag in driver.find_elements(By.TAG_NAME, "img"):
+                src = img_tag.get_attribute("src")
+                if src and src not in seen and not src.startswith("data:"):
+                    seen.add(src)
+                    attachment_urls.append(src)
+        except Exception:
+            pass
+        finally:
+            driver.switch_to.default_content()
+
     guessed_urls = []
     
     # Strategy E: The Hardcoded Portal Pattern Guesser (The Ultimate Fallback)
@@ -521,6 +544,7 @@ def download_attachment(
     url: str,
     save_dir: str,
     timeout: int = 60,
+    driver = None,
 ) -> Optional[str]:
     """
     Download a single attachment using the browser session's cookies.
@@ -550,6 +574,57 @@ def download_attachment(
     except requests.RequestException as e:
         logger.error(f"Download failed for {url}: {e}")
         return None
+
+    ct = resp.headers.get("Content-Type", "").lower()
+    if "text/html" in ct and driver is not None:
+        logger.info(f"URL returned an HTML viewer page. Using Selenium element-screenshot fallback for: {url}")
+        original_window = driver.current_window_handle
+        try:
+            driver.switch_to.new_window('tab')
+            driver.get(url)
+            import time
+            time.sleep(3) # Wait for viewer to render image
+            
+            # Find the largest image on the page
+            from selenium.webdriver.common.by import By
+            imgs = driver.find_elements(By.TAG_NAME, "img")
+            largest_img = None
+            max_area = 0
+            for img in imgs:
+                try:
+                    size = img.size
+                    area = size["width"] * size["height"]
+                    if area > max_area:
+                        max_area = area
+                        largest_img = img
+                except Exception:
+                    pass
+            
+            if largest_img and max_area > 5000:
+                filename = _filename_from_response(resp, url)
+                if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    filename += ".png"
+                import re, os
+                filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+                save_path = os.path.join(save_dir, filename)
+                
+                # Avoid overwriting
+                base, ext = os.path.splitext(save_path)
+                counter = 1
+                while os.path.exists(save_path):
+                    save_path = f"{base}_{counter}{ext}"
+                    counter += 1
+                
+                largest_img.screenshot(save_path)
+                logger.info(f"  Screenshot extracted from viewer: {filename}")
+                return save_path
+            else:
+                logger.warning("Could not find a prominent image in the viewer page.")
+        except Exception as e:
+            logger.error(f"Failed to screenshot viewer page: {e}")
+        finally:
+            driver.close()
+            driver.switch_to.window(original_window)
 
     filename = _filename_from_response(resp, url)
     # Sanitize filename
