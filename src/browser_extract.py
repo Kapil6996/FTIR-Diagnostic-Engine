@@ -563,6 +563,233 @@ def search_and_extract_ftir(driver: webdriver.Edge, ftir_no: str, portal_url: st
 
 
 # ---------------------------------------------------------------------------
+#  FTIR Response Form Excel Download & Image Extraction
+# ---------------------------------------------------------------------------
+
+def _get_edge_download_dir(driver: webdriver.Edge) -> str:
+    """Get or create a known download directory for Edge."""
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    download_dir = os.path.join(_project_root, "temp_downloads")
+    os.makedirs(download_dir, exist_ok=True)
+    return download_dir
+
+
+def _wait_for_download(download_dir: str, timeout: int = 120) -> Optional[str]:
+    """
+    Wait for a new file to appear in download_dir and finish downloading.
+    Returns the path of the downloaded file, or None on timeout.
+    """
+    # Record existing files
+    existing = set(os.listdir(download_dir))
+    
+    start = time.time()
+    new_file = None
+    while time.time() - start < timeout:
+        current = set(os.listdir(download_dir))
+        new_files = current - existing
+        
+        # Filter out partial download files (.crdownload, .part, .tmp)
+        completed = [
+            f for f in new_files
+            if not f.endswith(('.crdownload', '.part', '.tmp', '.download'))
+        ]
+        
+        if completed:
+            # Pick the newest completed file
+            new_file = max(
+                completed,
+                key=lambda f: os.path.getmtime(os.path.join(download_dir, f))
+            )
+            # Wait a moment to ensure writing is complete
+            path = os.path.join(download_dir, new_file)
+            prev_size = -1
+            for _ in range(5):
+                time.sleep(1)
+                curr_size = os.path.getsize(path)
+                if curr_size == prev_size and curr_size > 0:
+                    logger.info(f"Download complete: {new_file} ({curr_size:,} bytes)")
+                    return path
+                prev_size = curr_size
+            # File seems stable
+            return path
+        
+        time.sleep(2)
+    
+    logger.warning(f"Download timed out after {timeout}s")
+    return None
+
+
+def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
+    """
+    Extract embedded images from an Excel .xlsx file.
+    
+    .xlsx files are ZIP archives. Images are stored in xl/media/.
+    This approach requires NO extra packages — just the built-in zipfile module.
+    """
+    import zipfile
+    
+    extracted = []
+    os.makedirs(output_dir, exist_ok=True)
+    
+    try:
+        with zipfile.ZipFile(xlsx_path, 'r') as zf:
+            media_files = [
+                f for f in zf.namelist()
+                if f.startswith('xl/media/') and not f.endswith('/')
+            ]
+            
+            if not media_files:
+                logger.warning(f"No images found in xl/media/ of {xlsx_path}")
+                return []
+            
+            logger.info(f"Found {len(media_files)} embedded images in Excel response form")
+            
+            for media_file in media_files:
+                # Extract just the filename (e.g., "image1.png")
+                filename = os.path.basename(media_file)
+                save_path = os.path.join(output_dir, filename)
+                
+                # Avoid overwriting
+                base, ext = os.path.splitext(save_path)
+                counter = 1
+                while os.path.exists(save_path):
+                    save_path = f"{base}_{counter}{ext}"
+                    counter += 1
+                
+                # Read from zip and write to disk
+                with zf.open(media_file) as src, open(save_path, 'wb') as dst:
+                    dst.write(src.read())
+                
+                file_size = os.path.getsize(save_path)
+                logger.info(f"  Extracted from Excel: {filename} ({file_size:,} bytes)")
+                extracted.append(save_path)
+    except zipfile.BadZipFile:
+        logger.error(f"Downloaded file is not a valid Excel/ZIP file: {xlsx_path}")
+    except Exception as e:
+        logger.error(f"Error extracting images from Excel: {e}")
+    
+    return extracted
+
+
+def extract_via_response_form(
+    driver: webdriver.Edge,
+    ftir_no: str,
+    save_dir: str,
+) -> List[str]:
+    """
+    Strategy: Click 'Go to FTIR Response Form' button on the current FTIR page,
+    which downloads an Excel file containing the attachments. Then extract
+    embedded images from the downloaded Excel.
+    
+    This is the MOST RELIABLE extraction method because it uses the portal's
+    own export functionality rather than scraping the DOM.
+    
+    Parameters
+    ----------
+    driver : webdriver.Edge
+        Active Selenium WebDriver positioned on an FTIR detail page.
+    ftir_no : str
+        FTIR number for logging.
+    save_dir : str
+        Directory to save extracted images into.
+    
+    Returns
+    -------
+    List[str]
+        List of file paths of extracted images.
+    """
+    logger.info(f"FTIR {ftir_no}: [STRATEGY: RESPONSE FORM] Attempting to find 'Go to FTIR Response Form' button...")
+    
+    # Set up a known download directory via Edge preferences
+    download_dir = _get_edge_download_dir(driver)
+    
+    # Configure Edge to download to our known directory (via CDP command)
+    try:
+        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": os.path.abspath(download_dir),
+        })
+        logger.info(f"Download directory set to: {download_dir}")
+    except Exception as e:
+        logger.warning(f"Could not set download directory via CDP: {e}")
+    
+    # Search for the "Go to FTIR Response Form" button using multiple strategies
+    button = None
+    button_strategies = [
+        # Strategy 1: Exact text match (case-insensitive)
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
+        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
+        # Strategy 2: Partial text "response form"
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        # Strategy 3: Any element containing the text
+        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'go to ftir')]",
+        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+    ]
+    
+    for xpath in button_strategies:
+        try:
+            elements = driver.find_elements(By.XPATH, xpath)
+            for el in elements:
+                if el.is_displayed():
+                    button = el
+                    logger.info(f"Found button with text: '{el.text.strip()}'")
+                    break
+            if button:
+                break
+        except Exception:
+            continue
+    
+    if not button:
+        logger.warning(f"FTIR {ftir_no}: Could not find 'FTIR Response Form' button on the page.")
+        return []
+    
+    # Record existing files in download dir before clicking
+    existing_files = set(os.listdir(download_dir))
+    
+    # Click the button
+    try:
+        button.click()
+        logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button. Waiting for download...")
+    except Exception as e:
+        logger.error(f"FTIR {ftir_no}: Failed to click button: {e}")
+        return []
+    
+    # Wait for the Excel file to download
+    downloaded_file = _wait_for_download(download_dir, timeout=120)
+    
+    if not downloaded_file:
+        logger.warning(f"FTIR {ftir_no}: Response Form Excel download failed or timed out.")
+        return []
+    
+    # Check if it's an Excel file
+    if not downloaded_file.lower().endswith(('.xlsx', '.xls')):
+        logger.warning(f"FTIR {ftir_no}: Downloaded file is not Excel: {downloaded_file}")
+        return []
+    
+    logger.info(f"FTIR {ftir_no}: Response Form Excel downloaded: {downloaded_file}")
+    
+    # Extract images from the Excel file
+    extracted_images = _extract_images_from_xlsx(downloaded_file, save_dir)
+    
+    # Clean up the downloaded Excel file
+    try:
+        os.remove(downloaded_file)
+        logger.info(f"Cleaned up temp Excel file: {downloaded_file}")
+    except OSError:
+        pass
+    
+    if extracted_images:
+        logger.info(f"FTIR {ftir_no}: ✓ Successfully extracted {len(extracted_images)} images from Response Form Excel!")
+    else:
+        logger.warning(f"FTIR {ftir_no}: Response Form Excel contained no extractable images.")
+    
+    return extracted_images
+
+
+# ---------------------------------------------------------------------------
 #  Attachment download
 # ---------------------------------------------------------------------------
 
@@ -800,26 +1027,31 @@ def process_ftir(
         if not attachment_urls:
             logger.warning(f"FTIR {ftir_no}: Fallback search also failed to find attachments.")
 
-    # ── Download attachments ───────────────────────────────────────────
-    cookies = _get_browser_cookies_for_requests(driver)
-    downloaded: List[str] = []
+    # ── Try Excel Response Form Strategy First ─────────────────────────
+    extracted_images = extract_via_response_form(driver, ftir_no, save_dir)
+    if extracted_images:
+        extraction_source = "Excel Response Form"
+        downloaded = extracted_images
+    else:
+        # ── Fallback to HTTP Download of DOM scraped URLs ──────────────
+        cookies = _get_browser_cookies_for_requests(driver)
+        downloaded: List[str] = []
 
-    for i, att_url in enumerate(attachment_urls):
-        logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_urls)}")
-        try:
-            saved = download_attachment(cookies, att_url, save_dir, driver=driver)
-            if saved:
-                downloaded.append(saved)
-        except Exception as e:
-            logger.error(f"Error downloading attachment {att_url}: {e}")
+        for i, att_url in enumerate(attachment_urls):
+            logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_urls)}")
+            try:
+                saved = download_attachment(cookies, att_url, save_dir, driver=driver)
+                if saved:
+                    downloaded.append(saved)
+            except Exception as e:
+                logger.error(f"Error downloading attachment {att_url}: {e}")
 
-        # Polite delay between requests
-        if i < len(attachment_urls) - 1:
-            time.sleep(_REQUEST_DELAY)
+            # Polite delay between requests
+            if i < len(attachment_urls) - 1:
+                time.sleep(_REQUEST_DELAY)
 
     logger.info(
-        f"FTIR {ftir_no}: {len(downloaded)}/{len(attachment_urls)} "
-        f"attachments saved to {save_dir}"
+        f"FTIR {ftir_no}: {len(downloaded)} attachments saved to {save_dir}"
     )
 
     return {
