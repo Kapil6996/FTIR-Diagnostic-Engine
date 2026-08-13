@@ -90,7 +90,10 @@ else:
 _REQUEST_DELAY = 1.5
 
 # Page-load timeout for Selenium waits (seconds).
-_PAGE_TIMEOUT = 30
+# Set extremely high (5 minutes) so that if the user hits a login screen
+# and has to type passwords/OTP, the script doesn't time out and crash
+# while they are still typing!
+_PAGE_TIMEOUT = 300
 
 # Common attachment file extensions we care about.
 _ATTACHMENT_EXTENSIONS = {
