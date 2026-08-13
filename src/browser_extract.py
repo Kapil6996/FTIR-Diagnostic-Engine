@@ -182,7 +182,7 @@ def _looks_like_attachment_url(href: str) -> bool:
     return False
 
 
-def extract_ftir_page(driver: webdriver.Edge, url: str) -> Dict[str, Any]:
+def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> Dict[str, Any]:
     """
     Navigate to an FTIR detail page and extract subject text and
     attachment URLs.
@@ -329,10 +329,27 @@ def extract_ftir_page(driver: webdriver.Edge, url: str) -> Dict[str, Any]:
                 seen.add(src)
                 attachment_urls.append(src)
 
+    guessed_urls = []
+    
+    # Strategy E: The Hardcoded Portal Pattern Guesser (The Ultimate Fallback)
+    # If the scraper completely fails to find any images in the DOM, we can blindly 
+    # brute-force the server based on the known portal URL and FTIR number!
+    if ftir_no and PORTAL_SEARCH_URL and PORTAL_SEARCH_URL != "INSERT_URL_HERE":
+        if "/sift" in PORTAL_SEARCH_URL.lower():
+            # e.g., https://maruti.com/sift/search.do -> https://maruti.com/sift
+            # But handle case insensitivity
+            idx = PORTAL_SEARCH_URL.lower().find("/sift")
+            base_sift = PORTAL_SEARCH_URL[:idx] + "/sift"
+            logger.info(f"Strategy E: Generating hardcoded URLs for {ftir_no} using base {base_sift}")
+            for category in range(1, 4):
+                for sequence in range(1, 11):
+                    hardcoded_url = f"{base_sift}/ftirWebFile.do?documentid={ftir_no}&fileCategory={category}&fileSequence={sequence}"
+                    if hardcoded_url not in attachment_urls and hardcoded_url not in guessed_urls:
+                        guessed_urls.append(hardcoded_url)
+
     # Strategy D: The URL Sequence Guesser
     # The user noted images follow a strict pattern: ...&fileCategory=1&fileSequence=1&...
     # If we find EVEN ONE URL matching this, we can mathematically generate the rest!
-    guessed_urls = []
     
     # We will search both the already found attachments and the current page URL for hints
     search_pool = attachment_urls + [driver.current_url]
@@ -456,7 +473,7 @@ def search_and_extract_ftir(driver: webdriver.Edge, ftir_no: str, portal_url: st
         time.sleep(2)
         
         logger.info(f"Search submitted. Now extracting from resulting page: {driver.current_url}")
-        return extract_ftir_page(driver, driver.current_url)
+        return extract_ftir_page(driver, driver.current_url, ftir_no=ftir_no)
 
     except Exception as e:
         logger.error(f"Fallback Search Failed during execution: {e}")
@@ -616,7 +633,7 @@ def process_ftir(
     # ── Extract page ───────────────────────────────────────────────────
     try:
         logger.info(f"FTIR {ftir_no}: [EXTRACTION SOURCE: EXCEL HYPERLINK] Trying direct URL.")
-        page_info = extract_ftir_page(driver, url)
+        page_info = extract_ftir_page(driver, url, ftir_no=ftir_no)
         attachment_urls = page_info["attachment_urls"]
         if attachment_urls:
             extraction_source = "Hyperlink"
