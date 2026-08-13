@@ -1,0 +1,23 @@
+Kill any lingering background Python / Browser processes: Open Command Prompt and run:
+
+cmd
+
+
+taskkill /F /IM python.exe /IM msedge.exe /IM msedgedriver.exe /IM chrome.exe /IM chromedriver.exe
+Pull the updated code:
+
+cmd
+
+
+git pull
+Run the pipeline in ONE single terminal window:
+
+cmd
+
+
+python -m src.pipeline
+When the Edge browser pops up and shows the Suzuki Login screen:
+
+Simply enter your credentials and log in manually.
+The script will detect your login, automatically navigate to the FTIR page, click the "Go to FTIR Response Form" button, and download all images!
+18:38
