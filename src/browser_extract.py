@@ -79,11 +79,29 @@ def _load_portal_url() -> str:
     return "INSERT_URL_HERE"
 
 
+def _load_attachment_template() -> str:
+    """Read exact attachment URL template from config/attachment_url_template.txt."""
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(_project_root, "config", "attachment_url_template.txt")
+    if os.path.isfile(config_path):
+        with open(config_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    if "http" in line and "{FTIR_NO}" in line:
+                        return line
+    return ""
+
+
 PORTAL_SEARCH_URL = _load_portal_url()
 if PORTAL_SEARCH_URL == "INSERT_URL_HERE":
     logger.warning("⚠️ Portal URL not configured! Edit config/portal_url.txt with your portal URL.")
 else:
     logger.info(f"✓ Portal URL loaded from config: {PORTAL_SEARCH_URL[:40]}...")
+
+ATTACHMENT_URL_TEMPLATE = _load_attachment_template()
+if ATTACHMENT_URL_TEMPLATE:
+    logger.info("✓ Exact Attachment URL Template loaded from config!")
 
 # Delay (seconds) between consecutive network requests to avoid
 # hammering the internal server.
@@ -390,18 +408,26 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
     # Strategy E: The Hardcoded Portal Pattern Guesser (The Ultimate Fallback)
     # If the scraper completely fails to find any images in the DOM, we can blindly 
     # brute-force the server based on the known portal URL and FTIR number!
-    if ftir_no and PORTAL_SEARCH_URL and PORTAL_SEARCH_URL != "INSERT_URL_HERE":
-        if "/sift" in PORTAL_SEARCH_URL.lower():
-            # e.g., https://maruti.com/sift/search.do -> https://maruti.com/sift
-            # But handle case insensitivity
-            idx = PORTAL_SEARCH_URL.lower().find("/sift")
-            base_sift = PORTAL_SEARCH_URL[:idx] + "/sift"
-            logger.info(f"Strategy E: Generating hardcoded URLs for {ftir_no} using base {base_sift}")
+    if ftir_no:
+        if ATTACHMENT_URL_TEMPLATE:
+            logger.info(f"Strategy E: Generating exact URLs using configured template for {ftir_no}")
             for category in range(1, 4):
                 for sequence in range(1, 11):
-                    hardcoded_url = f"{base_sift}/ftirWebFile.do?documentid={ftir_no}&fileCategory={category}&fileSequence={sequence}"
+                    hardcoded_url = ATTACHMENT_URL_TEMPLATE.replace("{FTIR_NO}", ftir_no).replace("{CATEGORY}", str(category)).replace("{SEQUENCE}", str(sequence))
                     if hardcoded_url not in attachment_urls and hardcoded_url not in guessed_urls:
                         guessed_urls.append(hardcoded_url)
+        elif PORTAL_SEARCH_URL and PORTAL_SEARCH_URL != "INSERT_URL_HERE":
+            if "/sift" in PORTAL_SEARCH_URL.lower():
+                # e.g., https://maruti.com/sift/search.do -> https://maruti.com/sift
+                # But handle case insensitivity
+                idx = PORTAL_SEARCH_URL.lower().find("/sift")
+                base_sift = PORTAL_SEARCH_URL[:idx] + "/sift"
+                logger.info(f"Strategy E: Generating hardcoded URLs for {ftir_no} using base {base_sift}")
+                for category in range(1, 4):
+                    for sequence in range(1, 11):
+                        hardcoded_url = f"{base_sift}/ftirWebFile.do?documentid={ftir_no}&fileCategory={category}&fileSequence={sequence}"
+                        if hardcoded_url not in attachment_urls and hardcoded_url not in guessed_urls:
+                            guessed_urls.append(hardcoded_url)
 
     # Strategy D: The URL Sequence Guesser
     # The user noted images follow a strict pattern: ...&fileCategory=1&fileSequence=1&...

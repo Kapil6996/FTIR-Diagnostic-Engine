@@ -39,3 +39,4 @@ env/
 ehthumbs.db
 Thumbs.db
 portal_url.txt
+config/attachment_url_template.txt
