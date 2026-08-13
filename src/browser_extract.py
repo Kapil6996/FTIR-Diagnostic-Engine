@@ -790,6 +790,9 @@ def extract_via_response_form(
     except Exception as e:
         logger.warning(f"Could not set download directory via CDP: {e}")
     
+    # Allow time for dynamic AJAX buttons to render
+    time.sleep(5)
+    
     # Search for the "Go to FTIR Response Form" button using multiple strategies
     button_strategies = [
         # Strategy 1: Exact text match (case-insensitive)
@@ -815,6 +818,36 @@ def extract_via_response_form(
                         return el
             except Exception:
                 continue
+                
+        # Super-aggressive JS brute-force search
+        js_script = """
+        function findButton(root) {
+            let elements = Array.from(root.querySelectorAll('button, a, input, img, span, td, div'));
+            elements.reverse(); // Visit deepest children first to avoid clicking giant containers
+            for (let el of elements) {
+                if (el.shadowRoot) {
+                    let shadowBtn = findButton(el.shadowRoot);
+                    if (shadowBtn) return shadowBtn;
+                }
+                let text = (el.innerText || el.value || el.title || el.alt || el.name || '').toLowerCase();
+                if (text.includes('response form') || text.includes('go to ftir') || text.includes('ftir response')) {
+                    if (el.offsetWidth > 0 || el.offsetHeight > 0) { // Check visibility
+                        return el;
+                    }
+                }
+            }
+            return null;
+        }
+        return findButton(document);
+        """
+        try:
+            btn = driver.execute_script(js_script)
+            if btn:
+                logger.info(f"Ultra-aggressive JS search found button: {btn.tag_name}")
+                return btn
+        except Exception:
+            pass
+            
         return None
 
     def _recursive_iframe_search_and_click() -> bool:
@@ -835,18 +868,18 @@ def extract_via_response_form(
                 except Exception as e2:
                     logger.warning(f"Native click also failed: {e2}")
         
-        # Search child iframes
+        # Search child iframes and frames
         try:
-            iframes = driver.find_elements(By.TAG_NAME, "iframe")
+            frames_tags = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
         except Exception:
             return False
             
-        for i in range(len(iframes)):
+        for i in range(len(frames_tags)):
             try:
-                frames = driver.find_elements(By.TAG_NAME, "iframe")
-                if i >= len(frames):
+                current_frames = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
+                if i >= len(current_frames):
                     continue
-                driver.switch_to.frame(frames[i])
+                driver.switch_to.frame(current_frames[i])
                 if _recursive_iframe_search_and_click():
                     return True
                 driver.switch_to.parent_frame()
