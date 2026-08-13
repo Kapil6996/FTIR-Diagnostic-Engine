@@ -769,11 +769,18 @@ def extract_via_response_form(
         btn = _find_button_in_context()
         if btn:
             try:
-                btn.click()
-                logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button. Waiting for download...")
+                # Use JavaScript click to bypass ANY overlays, stick headers, or "ElementNotInteractable" errors
+                driver.execute_script("arguments[0].click();", btn)
+                logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button using JavaScript. Waiting for download...")
                 return True
             except Exception as e:
-                logger.warning(f"Found button but failed to click: {e}")
+                logger.warning(f"Found button but JS click failed: {e}. Trying native click...")
+                try:
+                    btn.click()
+                    logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button using native click. Waiting for download...")
+                    return True
+                except Exception as e2:
+                    logger.warning(f"Native click also failed: {e2}")
         
         # Search child iframes
         try:
