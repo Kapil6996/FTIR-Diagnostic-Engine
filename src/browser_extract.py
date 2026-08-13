@@ -37,8 +37,6 @@ from urllib.parse import urlparse, urljoin, unquote
 
 import requests
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options as ChromeOptions
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.edge.options import Options as EdgeOptions
 from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.common.by import By
@@ -158,14 +156,12 @@ def get_driver(
     try:
         driver = webdriver.Edge(options=edge_options)
         logger.info(f"Edge driver started with profile: {profile_dir}")
-    except WebDriverException:
-        try:
-            from webdriver_manager.microsoft import EdgeChromiumDriverManager
-            service = EdgeService(EdgeChromiumDriverManager().install())
-            driver = webdriver.Edge(service=service, options=edge_options)
-            logger.info(f"Edge driver started via webdriver_manager with profile: {profile_dir}")
-        except Exception as e:
-            raise RuntimeError(f"Could not start Microsoft Edge. Please ensure Edge is installed! Error: {e}")
+    except WebDriverException as e:
+        raise RuntimeError(
+            f"Could not start Microsoft Edge browser.\n"
+            f"Make sure Edge is installed and up to date.\n"
+            f"Error: {e}"
+        )
 
     driver.set_page_load_timeout(_PAGE_TIMEOUT)
     driver.implicitly_wait(5)
