@@ -194,7 +194,7 @@ def get_driver(
 #  Page extraction
 # ---------------------------------------------------------------------------
 
-def _get_browser_cookies_for_requests(driver: webdriver.Chrome) -> dict:
+def _get_browser_cookies_for_requests(driver: webdriver.Edge) -> dict:
     """Convert Selenium cookies into a dict usable by ``requests``."""
     return {c["name"]: c["value"] for c in driver.get_cookies()}
 
@@ -222,7 +222,7 @@ def _looks_like_attachment_url(href: str) -> bool:
     return False
 
 
-def extract_ftir_page(driver: webdriver.Chrome, url: str) -> Dict[str, Any]:
+def extract_ftir_page(driver: webdriver.Edge, url: str) -> Dict[str, Any]:
     """
     Navigate to an FTIR detail page and extract subject text and
     attachment URLs.
@@ -417,7 +417,7 @@ def extract_ftir_page(driver: webdriver.Chrome, url: str) -> Dict[str, Any]:
     }
 
 
-def search_and_extract_ftir(driver: webdriver.Chrome, ftir_no: str, portal_url: str = PORTAL_SEARCH_URL) -> Dict[str, Any]:
+def search_and_extract_ftir(driver: webdriver.Edge, ftir_no: str, portal_url: str = PORTAL_SEARCH_URL) -> Dict[str, Any]:
     """
     Fallback method: Navigates to the portal search page, enters the FTIR number
     into the first text box, hits Enter, waits for the result page to load,
@@ -601,7 +601,7 @@ def download_attachment(
 # ---------------------------------------------------------------------------
 
 def process_ftir(
-    driver: webdriver.Chrome,
+    driver: webdriver.Edge,
     ftir_no: str,
     url: str,
     base_save_dir: str = "ftir_records",
