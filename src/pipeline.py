@@ -247,6 +247,7 @@ def run_pipeline(
         "Pipeline_Status":      [],
         "Failure_Stage":        [],
         "Failure_Diagnostics":  [],
+        "Extraction_Source":    [],
     }
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -276,6 +277,7 @@ def run_pipeline(
         pipeline_status = "SUCCESS"
         failure_stage = "None"
         failure_diagnostics = "All pipeline stages executed cleanly."
+        extraction_source = "None"
 
         # ── 4a. Browser extraction (with resumability) ─────────────────
         ftir_folder = os.path.join(ftir_records_dir, ftir_no)
@@ -288,8 +290,10 @@ def run_pipeline(
                     url=ftir_url,
                     base_save_dir=ftir_records_dir,
                 )
+                extraction_source = extract_result.get("extraction_source", "Unknown")
                 if extract_result.get("skipped"):
                     logger.debug(f"{row_label}: Attachments already downloaded (resumability skip)")
+                    extraction_source = "Local Cache"
                 else:
                     n_files = len(extract_result.get("downloaded_files", []))
                     logger.info(f"{row_label}: Downloaded {n_files} attachment(s)")
@@ -383,6 +387,7 @@ def run_pipeline(
             result_cols["Failure_Diagnostics"].append(
                 f"Human correction applied. Original error type: {ctype}"
             )
+            result_cols["Extraction_Source"].append(extraction_source)
             if progress_callback:
                 progress_callback(idx + 1, total_rows, row_label, {
                     "defect_type": result_cols["Defect_Type"][-1],
@@ -437,6 +442,7 @@ def run_pipeline(
             result_cols["Pipeline_Status"].append("LEARNING_OVERRIDE")
             result_cols["Failure_Stage"].append("None")
             result_cols["Failure_Diagnostics"].append(f"Human correction applied via similarity. Error type: {ctype}")
+            result_cols["Extraction_Source"].append(extraction_source)
             
             if progress_callback:
                 progress_callback(idx + 1, total_rows, row_label, {
@@ -482,6 +488,7 @@ def run_pipeline(
             result_cols["Pipeline_Status"].append(pipeline_status)
             result_cols["Failure_Stage"].append(failure_stage)
             result_cols["Failure_Diagnostics"].append(failure_diagnostics)
+            result_cols["Extraction_Source"].append(extraction_source)
             logger.info(f"{row_label}: → NON-RUST ({rust_confidence:.0%}) — skipping SBPR")
             if progress_callback:
                 progress_callback(idx + 1, total_rows, row_label, {
@@ -554,6 +561,7 @@ def run_pipeline(
         result_cols["Pipeline_Status"].append(pipeline_status)
         result_cols["Failure_Stage"].append(failure_stage)
         result_cols["Failure_Diagnostics"].append(failure_diagnostics)
+        result_cols["Extraction_Source"].append(extraction_source)
 
         flag_str = " ⚠ REVIEW" if fused["flag_for_review"] else ""
         err_str_log = f" [! {pipeline_status}]" if pipeline_status != "SUCCESS" else ""
@@ -572,7 +580,8 @@ def run_pipeline(
                 "flag_for_review": fused["flag_for_review"],
                 "error_count": error_count, "warning_count": warning_count,
                 "pipeline_status": pipeline_status, "failure_stage": failure_stage,
-                "failure_diagnostics": failure_diagnostics, "ftir_no": ftir_no
+                "failure_diagnostics": failure_diagnostics, "ftir_no": ftir_no,
+                "extraction_source": extraction_source
             })
 
     # ── 5. Append result columns to DataFrame ──────────────────────────

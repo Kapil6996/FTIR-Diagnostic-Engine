@@ -631,12 +631,14 @@ def process_ftir(
             if os.path.isfile(file_path):
                 os.remove(file_path)
 
+    extraction_source = "None"
     # ── Extract page ───────────────────────────────────────────────────
     try:
         logger.info(f"FTIR {ftir_no}: [EXTRACTION SOURCE: EXCEL HYPERLINK] Trying direct URL.")
         page_info = extract_ftir_page(driver, url)
         attachment_urls = page_info["attachment_urls"]
         if attachment_urls:
+            extraction_source = "Hyperlink"
             logger.info(f"FTIR {ftir_no}: Successfully found attachments via Excel hyperlink.")
     except Exception as e:
         logger.warning(f"FTIR {ftir_no}: Initial extraction failed ({e}). Triggering fallback search.")
@@ -648,6 +650,7 @@ def process_ftir(
         fallback_info = search_and_extract_ftir(driver, ftir_no)
         attachment_urls = fallback_info["attachment_urls"]
         if attachment_urls:
+            extraction_source = "Quick Search"
             logger.info(f"FTIR {ftir_no}: Successfully found attachments via Quick Search fallback.")
         
         # If the fallback found a subject text, use it
@@ -684,6 +687,7 @@ def process_ftir(
         "downloaded_files": downloaded,
         "attachment_urls": attachment_urls,
         "skipped": False,
+        "extraction_source": extraction_source,
     }
 
 
