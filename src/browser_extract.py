@@ -90,100 +90,60 @@ _ATTACHMENT_EXTENSIONS = {
 def get_driver(
     profile_dir: Optional[str] = None,
     headless: bool = False,
-) -> webdriver.Chrome:
+) -> webdriver.Edge:
     """
-    Return a configured Selenium Chrome WebDriver using a persistent
-    user-data-dir profile.
-
-    The profile directory stores cookies, local-storage, and session
-    tokens so that a one-time manual login by the user is preserved
-    across all future automated runs.
+    Initialise the Selenium WebDriver.
+    Strictly launches Microsoft Edge for enterprise compatibility.
 
     Parameters
     ----------
     profile_dir : str, optional
-        Filesystem path to the Chrome user-data directory.
+        Filesystem path to the Edge user-data directory.
         Defaults to ``~/.ftir_sbpr_tool/browser_profile``.
     headless : bool
-        If True, launch Chrome in headless mode (no visible window).
-        Defaults to False so the user can see the browser on first run
-        and manually log in.
+        If True, launch Edge in headless mode (no visible window).
+        Defaults to False so the user can see the browser.
 
     Returns
     -------
-    webdriver.Chrome
+    webdriver.Edge
     """
     if profile_dir is None:
-        profile_dir = _DEFAULT_PROFILE_DIR
+        profile_dir = _DEFAULT_PROFILE_DIR + "_edge"
 
     os.makedirs(profile_dir, exist_ok=True)
 
-    options = ChromeOptions()
+    edge_options = EdgeOptions()
 
     # Persistent profile — preserves login sessions across runs
-    options.add_argument(f"--user-data-dir={os.path.abspath(profile_dir)}")
+    edge_options.add_argument(f"--user-data-dir={os.path.abspath(profile_dir)}")
 
     if headless:
         # True headless breaks enterprise portals. Move window off-screen instead to hide it.
-        options.add_argument("--window-position=-32000,-32000")
+        edge_options.add_argument("--window-position=-32000,-32000")
 
     # Suppress noisy DevTools logging
-    options.add_argument("--log-level=3")
-    options.add_experimental_option("excludeSwitches", ["enable-logging"])
-
-    # Disable automation banners that some portals detect
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option("useAutomationExtension", False)
+    edge_options.add_argument("--log-level=3")
+    edge_options.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
+    edge_options.add_experimental_option("useAutomationExtension", False)
 
     # Reasonable window size for element visibility
-    options.add_argument("--window-size=1920,1080")
+    edge_options.add_argument("--window-size=1920,1080")
 
     # Disable pop-up blocker so download dialogs don't interfere
-    options.add_argument("--disable-popup-blocking")
+    edge_options.add_argument("--disable-popup-blocking")
 
     try:
-        driver = webdriver.Chrome(options=options)
-        logger.info(f"Chrome driver started with profile: {profile_dir}")
+        driver = webdriver.Edge(options=edge_options)
+        logger.info(f"Edge driver started with profile: {profile_dir}")
     except WebDriverException:
         try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = ChromeService(ChromeDriverManager().install())
-            driver = webdriver.Chrome(service=service, options=options)
-            logger.info(f"Chrome driver started with profile: {profile_dir}")
-        except Exception:
-            logger.info("Chrome not found or failed to start. Falling back to Microsoft Edge...")
-            edge_options = EdgeOptions()
-            edge_profile = profile_dir + "_edge"
-            os.makedirs(edge_profile, exist_ok=True)
-            edge_options.add_argument(f"--user-data-dir={os.path.abspath(edge_profile)}")
-            
-            if headless:
-                # True headless breaks enterprise portals. Move window off-screen instead to hide it.
-                edge_options.add_argument("--window-position=-32000,-32000")
-            
-            # Edge specific flags
-            edge_options.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
-            edge_options.add_experimental_option("useAutomationExtension", False)
-            edge_options.add_argument("--window-size=1920,1080")
-            edge_options.add_argument("--disable-popup-blocking")
-
-            try:
-                driver = webdriver.Edge(options=edge_options)
-            except WebDriverException:
-                try:
-                    from webdriver_manager.microsoft import EdgeChromiumDriverManager
-                    service = EdgeService(EdgeChromiumDriverManager().install())
-                    driver = webdriver.Edge(service=service, options=edge_options)
-                except Exception:
-                    logger.info("Edge not found. Falling back to Safari...")
-                    try:
-                        driver = webdriver.Safari()
-                        logger.info("Safari driver started.")
-                    except Exception as e:
-                        raise RuntimeError(f"Could not start Chrome, Edge, or Safari. Please install Chrome! Error: {e}")
-            
-            if "edge_profile" in locals():
-                logger.info(f"Edge driver started with profile: {edge_profile}")
+            from webdriver_manager.microsoft import EdgeChromiumDriverManager
+            service = EdgeService(EdgeChromiumDriverManager().install())
+            driver = webdriver.Edge(service=service, options=edge_options)
+            logger.info(f"Edge driver started via webdriver_manager with profile: {profile_dir}")
+        except Exception as e:
+            raise RuntimeError(f"Could not start Microsoft Edge. Please ensure Edge is installed! Error: {e}")
 
     driver.set_page_load_timeout(_PAGE_TIMEOUT)
     driver.implicitly_wait(5)
@@ -229,7 +189,7 @@ def extract_ftir_page(driver: webdriver.Edge, url: str) -> Dict[str, Any]:
 
     Parameters
     ----------
-    driver : webdriver.Chrome
+    driver : webdriver.Edge
         An active Selenium WebDriver with a logged-in session.
     url : str
         Full URL of the FTIR detail page.
@@ -617,7 +577,7 @@ def process_ftir(
 
     Parameters
     ----------
-    driver : webdriver.Chrome
+    driver : webdriver.Edge
         Active Selenium WebDriver with a logged-in session.
     ftir_no : str
         Unique FTIR record identifier (used as folder name).
