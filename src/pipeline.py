@@ -229,8 +229,9 @@ def run_pipeline(
     if not skip_browser:
         try:
             from src.browser_extract import get_driver, process_ftir
-            browser_driver = get_driver(profile_dir=profile_dir, headless=True)
-            logger.info("  ✓ Browser driver initialised")
+            # Set headless=False so the user can visually confirm the browser is opening the FTIR
+            browser_driver = get_driver(profile_dir=profile_dir, headless=False)
+            logger.info("  ✓ Browser driver initialised (Visible Mode)")
         except Exception as e:
             logger.warning(f"  ✗ Browser driver unavailable ({e}). "
                            f"Will use only pre-downloaded attachments.")
@@ -247,7 +248,6 @@ def run_pipeline(
         "Pipeline_Status":      [],
         "Failure_Stage":        [],
         "Failure_Diagnostics":  [],
-        "Extraction_Source":    [],
     }
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -387,7 +387,6 @@ def run_pipeline(
             result_cols["Failure_Diagnostics"].append(
                 f"Human correction applied. Original error type: {ctype}"
             )
-            result_cols["Extraction_Source"].append(extraction_source)
             if progress_callback:
                 progress_callback(idx + 1, total_rows, row_label, {
                     "defect_type": result_cols["Defect_Type"][-1],
@@ -442,7 +441,6 @@ def run_pipeline(
             result_cols["Pipeline_Status"].append("LEARNING_OVERRIDE")
             result_cols["Failure_Stage"].append("None")
             result_cols["Failure_Diagnostics"].append(f"Human correction applied via similarity. Error type: {ctype}")
-            result_cols["Extraction_Source"].append(extraction_source)
             
             if progress_callback:
                 progress_callback(idx + 1, total_rows, row_label, {
@@ -488,7 +486,6 @@ def run_pipeline(
             result_cols["Pipeline_Status"].append(pipeline_status)
             result_cols["Failure_Stage"].append(failure_stage)
             result_cols["Failure_Diagnostics"].append(failure_diagnostics)
-            result_cols["Extraction_Source"].append(extraction_source)
             logger.info(f"{row_label}: → NON-RUST ({rust_confidence:.0%}) — skipping SBPR")
             if progress_callback:
                 progress_callback(idx + 1, total_rows, row_label, {
@@ -561,7 +558,6 @@ def run_pipeline(
         result_cols["Pipeline_Status"].append(pipeline_status)
         result_cols["Failure_Stage"].append(failure_stage)
         result_cols["Failure_Diagnostics"].append(failure_diagnostics)
-        result_cols["Extraction_Source"].append(extraction_source)
 
         flag_str = " ⚠ REVIEW" if fused["flag_for_review"] else ""
         err_str_log = f" [! {pipeline_status}]" if pipeline_status != "SUCCESS" else ""
