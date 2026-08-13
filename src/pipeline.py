@@ -155,6 +155,7 @@ def run_pipeline(
     sbpr_img_weights: str = DEFAULT_SBPR_IMG_WEIGHTS,
     ftir_records_dir: str = FTIR_RECORDS_DIR,
     skip_browser: bool = False,
+    test_mode: bool = False,
     profile_dir: Optional[str] = None,
     progress_callback: Optional[Callable[[int, int, str, Dict[str, Any]], Any]] = None,
 ) -> pd.DataFrame:
@@ -204,6 +205,9 @@ def run_pipeline(
     # ── 1. Read input Excel ────────────────────────────────────────────
     logger.info("Stage 0: Reading input Excel workbook...")
     df = read_ftir_sheet(input_path)
+    if test_mode:
+        df = df.head(1)
+        logger.info("  [TEST MODE] Truncated dataset to 1 row for rapid testing.")
     logger.info(f"  Loaded {len(df)} rows, {len(df.columns)} columns")
 
     # Identify FTIR number column
@@ -665,6 +669,10 @@ if __name__ == "__main__":
         help="Skip browser extraction; use only pre-downloaded attachments",
     )
     parser.add_argument(
+        "--test-mode", action="store_true",
+        help="Run on only the first row of the excel sheet to test extraction",
+    )
+    parser.add_argument(
         "--profile-dir", default=None,
         help="Chrome/Edge persistent user-data-dir for browser automation",
     )
@@ -678,5 +686,6 @@ if __name__ == "__main__":
         sbpr_tree_bundle=args.tree_bundle,
         sbpr_img_weights=args.img_weights,
         skip_browser=args.skip_browser,
+        test_mode=args.test_mode,
         profile_dir=args.profile_dir,
     )

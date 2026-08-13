@@ -186,6 +186,10 @@ class FtirSbprDesktopApp(tk.Tk):
         )
         lbl_sift_notice.grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(15, 4))
 
+        self.var_test_mode = tk.BooleanVar(value=True) # Default to True right now for their testing
+        chk_test = ttk.Checkbutton(frame, text="🧪 Test Mode (Process first row only for quick verification)", variable=self.var_test_mode)
+        chk_test.grid(row=4, column=0, columnspan=3, sticky=tk.W, pady=(5, 4))
+
         frame.columnconfigure(1, weight=1)
 
     def _build_kpi_dashboard(self):
