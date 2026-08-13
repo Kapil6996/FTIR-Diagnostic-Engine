@@ -9,8 +9,8 @@ An offline, on-device Python AI pipeline with a full **Desktop GUI** for automat
 ### For Developers (Running from Source)
 ```bash
 # 1. Clone the repository (Requires Git LFS for models)
-git clone https://github.com/Kapil6996/FTIR-Diagnostic-Engine.git
-cd FTIR-Diagnostic-Engine
+git clone https://github.com/Kapil6996/FTIR_Diagnostic_Engine.git
+cd FTIR_Diagnostic_Engine
 
 # 2. Install dependencies
 pip install -r requirements.txt
