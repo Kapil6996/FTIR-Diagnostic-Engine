@@ -285,13 +285,16 @@ def run_pipeline(
 
         # ── 4a. Browser extraction (with resumability) ─────────────────
         ftir_folder = os.path.join(ftir_records_dir, ftir_no)
-        if not skip_browser and ftir_url and ftir_url.startswith("http"):
+        if not skip_browser:
             try:
                 from src.browser_extract import process_ftir
+                # If no hyperlink URL, use empty string — process_ftir will
+                # automatically fall back to Quick Search
+                effective_url = ftir_url if (ftir_url and ftir_url.startswith("http")) else ""
                 extract_result = process_ftir(
                     driver=browser_driver,
                     ftir_no=ftir_no,
-                    url=ftir_url,
+                    url=effective_url,
                     base_save_dir=ftir_records_dir,
                 )
                 extraction_source = extract_result.get("extraction_source", "Unknown")

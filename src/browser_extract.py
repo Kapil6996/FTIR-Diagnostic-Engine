@@ -60,10 +60,32 @@ _DEFAULT_PROFILE_DIR = os.path.join(
 # ---------------------------------------------------------------------------
 #  CONFIGURATION
 # ---------------------------------------------------------------------------
-# If the standard URL fails, the robot will navigate to this portal URL and
-# try to search for the FTIR by typing its number into the first text box.
-# REPLACE THIS WITH THE ACTUAL EMPLOYEE PORTAL SEARCH URL:
-PORTAL_SEARCH_URL = "INSERT_URL_HERE"
+# Portal URL is read from config/portal_url.txt (gitignored so git pull
+# never overwrites your URL).  Falls back to this hardcoded default.
+def _load_portal_url() -> str:
+    """Read portal URL from config/portal_url.txt, surviving git pull."""
+    # Look relative to THIS file (src/) → go one level up to project root
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    config_path = os.path.join(_project_root, "config", "portal_url.txt")
+    if os.path.isfile(config_path):
+        with open(config_path, "r") as f:
+            url = f.read().strip()
+        if url and url != "INSERT_URL_HERE":
+            return url
+    # Also try CWD-relative path (for when run from project root)
+    if os.path.isfile("config/portal_url.txt"):
+        with open("config/portal_url.txt", "r") as f:
+            url = f.read().strip()
+        if url and url != "INSERT_URL_HERE":
+            return url
+    return "INSERT_URL_HERE"
+
+
+PORTAL_SEARCH_URL = _load_portal_url()
+if PORTAL_SEARCH_URL == "INSERT_URL_HERE":
+    logger.warning("⚠️ Portal URL not configured! Edit config/portal_url.txt with your portal URL.")
+else:
+    logger.info(f"✓ Portal URL loaded from config: {PORTAL_SEARCH_URL[:40]}...")
 
 # Delay (seconds) between consecutive network requests to avoid
 # hammering the internal server.
@@ -218,6 +240,20 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
     # Allow dynamic content to settle
     time.sleep(2)
 
+    # FIX: Scroll the ENTIRE page to force lazy-loaded content (like attachments
+    # below the specification block) to render. The user confirmed that photos
+    # appear only after scrolling past ~12 rows of incident description.
+    try:
+        # Scroll to absolute bottom
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(1)
+        # Scroll back to top
+        driver.execute_script("window.scrollTo(0, 0);")
+        time.sleep(1)
+        logger.info("Page scrolled to bottom and back to trigger lazy-loading.")
+    except Exception:
+        pass
+
     page_title = driver.title or ""
     base_url = driver.current_url
 
@@ -250,36 +286,59 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
             continue
 
     # ------------------------------------------------------------------
-    # 2. Attachment URL collection
+    # 2. Attachment URL collection — AGGRESSIVE MULTI-STRATEGY SCAN
     # ------------------------------------------------------------------
     attachment_urls: List[str] = []
     seen: set = set()
 
-    # Strategy A: find an attachments container and grab everything inside
+    # STRATEGY 0 (HIGHEST PRIORITY): Scan ALL links on page for ftirWebFile.do
+    # The user confirmed that clickable photo links (e.g., "cyxs.jpeg") on the
+    # FTIR page point to URLs containing "ftirWebFile.do". This is the most
+    # reliable indicator, so check it FIRST and across the ENTIRE page.
+    logger.info("Strategy 0: Scanning entire page for ftirWebFile/ftirWeb links...")
+    for a_tag in driver.find_elements(By.TAG_NAME, "a"):
+        href = a_tag.get_attribute("href")
+        if href and href not in seen:
+            href_lower = href.lower()
+            if "ftirweb" in href_lower or "ftirfile" in href_lower or "webfile" in href_lower:
+                seen.add(href)
+                attachment_urls.append(href)
+                logger.info(f"  Found ftirWeb link: {href[:80]}...")
+    if attachment_urls:
+        logger.info(f"Strategy 0: Found {len(attachment_urls)} ftirWebFile link(s)!")
+
+    # STRATEGY 1: Scan ALL links on full page for image-like file names
+    # Look for <a> tags whose visible text or href ends with image extensions
+    logger.info("Strategy 1: Scanning all links for image file names...")
+    for a_tag in driver.find_elements(By.TAG_NAME, "a"):
+        href = a_tag.get_attribute("href")
+        link_text = (a_tag.text or "").strip().lower()
+        if href and href not in seen:
+            # Check if link text looks like a filename (e.g., "cyxs.jpeg")
+            if any(link_text.endswith(ext) for ext in _ATTACHMENT_EXTENSIONS):
+                seen.add(href)
+                attachment_urls.append(href)
+                logger.info(f"  Found image link by name: {link_text} -> {href[:80]}...")
+            elif _looks_like_attachment_url(href):
+                seen.add(href)
+                attachment_urls.append(href)
+
+    # STRATEGY 2: Find attachment containers and grab everything inside
     container_selectors = [
-        "[class*='attachment']",
-        "[class*='Attachment']",
-        "[id*='attachment']",
-        "[id*='Attachment']",
-        "[class*='upload']",
-        "[class*='file-list']",
-        "[class*='media']",
+        "[class*='attachment']", "[class*='Attachment']",
+        "[id*='attachment']", "[id*='Attachment']",
+        "[class*='upload']", "[class*='file-list']",
         "[class*='gallery']",
-        "[class*='document']",
     ]
-    containers_found = False
     for css in container_selectors:
         try:
             containers = driver.find_elements(By.CSS_SELECTOR, css)
             for container in containers:
-                containers_found = True
-                # <a href="..."> links
                 for a_tag in container.find_elements(By.TAG_NAME, "a"):
                     href = a_tag.get_attribute("href")
                     if href and href not in seen:
                         seen.add(href)
                         attachment_urls.append(href)
-                # <img src="..."> images (sometimes full-res images are inlined)
                 for img_tag in container.find_elements(By.TAG_NAME, "img"):
                     src = img_tag.get_attribute("src")
                     if src and src not in seen and not src.startswith("data:"):
@@ -288,44 +347,19 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
         except NoSuchElementException:
             continue
 
-    # Strategy B: Search for exact "file category" or "file sequence" labels
-    if not containers_found:
-        logger.info("Scanning for 'file category' or 'file sequence' labels...")
-        try:
-            # Find elements containing 'file sequence' or 'file category' (case insensitive)
-            label_xpath = "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'file sequence') or contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'file category')]"
-            labels = driver.find_elements(By.XPATH, label_xpath)
-            if labels:
-                logger.info(f"Found {len(labels)} 'file sequence'/'file category' labels.")
-                for label in labels:
-                    # Look at the parent container (usually a table row or div)
-                    parent = label.find_element(By.XPATH, "..")
-                    for tag in parent.find_elements(By.TAG_NAME, "a"):
-                        href = tag.get_attribute("href")
-                        if href and href not in seen:
-                            seen.add(href)
-                            attachment_urls.append(href)
-                    for tag in parent.find_elements(By.TAG_NAME, "img"):
-                        src = tag.get_attribute("src")
-                        if src and src not in seen and not src.startswith("data:"):
-                            seen.add(src)
-                            attachment_urls.append(src)
-                if attachment_urls:
-                    containers_found = True
-        except Exception as e:
-            logger.debug(f"File sequence extraction failed: {e}")
-
-    # Strategy C: if still no attachments, scan the whole page
-    if not containers_found:
-        logger.info("No attachment container or file sequences found — scanning full page for attachment-like URLs")
-        for a_tag in driver.find_elements(By.TAG_NAME, "a"):
-            href = a_tag.get_attribute("href")
-            if href and href not in seen and _looks_like_attachment_url(href):
-                seen.add(href)
-                attachment_urls.append(href)
-        for img_tag in driver.find_elements(By.TAG_NAME, "img"):
-            src = img_tag.get_attribute("src")
-            if src and src not in seen and not src.startswith("data:"):
+    # STRATEGY 3: Grab ALL <img> tags on the page (skip tiny icons)
+    logger.info("Strategy 3: Scanning all <img> tags on page...")
+    for img_tag in driver.find_elements(By.TAG_NAME, "img"):
+        src = img_tag.get_attribute("src")
+        if src and src not in seen and not src.startswith("data:"):
+            # Skip tiny icons (< 50px) by checking natural dimensions
+            try:
+                w = img_tag.get_attribute("naturalWidth")
+                h = img_tag.get_attribute("naturalHeight")
+                if w and h and int(w) > 50 and int(h) > 50:
+                    seen.add(src)
+                    attachment_urls.append(src)
+            except Exception:
                 seen.add(src)
                 attachment_urls.append(src)
 
@@ -705,18 +739,23 @@ def process_ftir(
                 os.remove(file_path)
 
     extraction_source = "None"
+    attachment_urls = []
+    page_info = {"subject_text": None}
+
     # ── Extract page ───────────────────────────────────────────────────
-    try:
-        logger.info(f"FTIR {ftir_no}: [EXTRACTION SOURCE: EXCEL HYPERLINK] Trying direct URL.")
-        page_info = extract_ftir_page(driver, url, ftir_no=ftir_no)
-        attachment_urls = page_info["attachment_urls"]
-        if attachment_urls:
-            extraction_source = "Hyperlink"
-            logger.info(f"FTIR {ftir_no}: Successfully found attachments via Excel hyperlink.")
-    except Exception as e:
-        logger.warning(f"FTIR {ftir_no}: Initial extraction failed ({e}). Triggering fallback search.")
-        attachment_urls = []
-        page_info = {"subject_text": None}
+    if url and url.startswith("http"):
+        try:
+            logger.info(f"FTIR {ftir_no}: [EXTRACTION SOURCE: EXCEL HYPERLINK] Trying direct URL.")
+            page_info = extract_ftir_page(driver, url, ftir_no=ftir_no)
+            attachment_urls = page_info["attachment_urls"]
+            if attachment_urls:
+                extraction_source = "Hyperlink"
+                logger.info(f"FTIR {ftir_no}: Successfully found attachments via Excel hyperlink.")
+        except Exception as e:
+            logger.warning(f"FTIR {ftir_no}: Initial extraction failed ({e}). Triggering fallback search.")
+            attachment_urls = []
+    else:
+        logger.info(f"FTIR {ftir_no}: No hyperlink URL in Excel. Going directly to Quick Search.")
 
     if not attachment_urls:
         logger.warning(f"FTIR {ftir_no}: [EXTRACTION SOURCE: QUICK SEARCH] Attempting portal search fallback.")
@@ -739,7 +778,7 @@ def process_ftir(
 
     for i, att_url in enumerate(attachment_urls):
         logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_urls)}")
-        saved = download_attachment(cookies, att_url, save_dir)
+        saved = download_attachment(cookies, att_url, save_dir, driver=driver)
         if saved:
             downloaded.append(saved)
 
