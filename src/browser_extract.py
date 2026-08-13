@@ -1001,7 +1001,6 @@ def download_attachment(
                 filename = _filename_from_response(resp, url)
                 if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
                     filename += ".png"
-                import re, os
                 filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
                 save_path = os.path.join(save_dir, filename)
                 
