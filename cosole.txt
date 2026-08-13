@@ -1,28 +1,89 @@
-System initialized and ready. Please select an input FTIR Excel sheet above.
-Selected input source: C:/Users/284238/Desktop/tool/test.xlsx
-Output path changed to: C:/Users/284238/Desktop/tool/result\ftir_results.xlsx
+18:12:38 [INFO] ======================================================================
+18:12:38 [INFO]   FTIR → SBPR Classification Pipeline
+18:12:38 [INFO] ======================================================================
+18:12:38 [INFO]   Input Excel    : C:/Users/284238/Desktop/tool/test.xlsx
+18:12:38 [INFO]   Output Excel   : C:/Users/284238/Desktop/tool/result\ftir_results.xlsx
+18:12:38 [INFO]   Pipeline Log   : C:/Users/284238/Desktop/tool/result\pipeline_log.txt
+18:12:38 [INFO]   Skip Browser   : False
+18:12:38 [INFO]   Started at     : 2026-08-13T18:12:38.308189
+18:12:38 [INFO] ======================================================================
+18:12:38 [INFO] Stage 0: Reading input Excel workbook...
+18:12:38 [INFO] Loaded 1 FTIR records from 'test.xlsx' (header row 1, 1 rows have hyperlinks)
+18:12:38 [INFO]   [TEST MODE] Truncated dataset to 1 row for rapid testing.
+18:12:38 [INFO]   Loaded 1 rows, 20 columns
+18:12:38 [INFO]   FTIR identifier column: 'FTIR No.'
+18:12:38 [INFO] Stage 0: Loading model checkpoints...
+18:12:38 [INFO] Loaded trained Stage 1 (resnet34) weights from 'C:\Users\284238\Desktop\tool\FTIR_Diagnostic_Engine\models\rust_demo.pth' onto device [cpu]
+18:12:38 [INFO]   ✓ Stage 1 Rust classifier loaded
+18:12:38 [INFO]   ✓ Stage 2 Metadata tree loaded (38 features)
+18:12:39 [INFO] Loaded Stage 2 Secondary CNN weights from 'C:\Users\284238\Desktop\tool\FTIR_Diagnostic_Engine\models\sbpr_image.pth' onto [cpu]
+18:12:39 [INFO]   ✓ Stage 2 Image CNN loaded
+18:12:39 [DEBUG] Selenium Manager binary found at: C:\Users\284238\AppData\Local\Programs\Python\Python314\Lib\site-packages\selenium\webdriver\common\windows\selenium-manager.exe
+18:12:39 [DEBUG] Executing process: C:\Users\284238\AppData\Local\Programs\Python\Python314\Lib\site-packages\selenium\webdriver\common\windows\selenium-manager.exe --browser MicrosoftEdge --debug --language-binding python --output json
+18:12:39 [DEBUG] msedgedriver not found in PATH
+18:12:39 [DEBUG] MicrosoftEdge detected at C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+18:12:39 [DEBUG] Detected browser: MicrosoftEdge 151.0.4129.78
+18:12:39 [DEBUG] Required driver: msedgedriver 151.0.4129.78
+18:12:39 [DEBUG] msedgedriver 151.0.4129.78 already in the cache
+18:12:39 [DEBUG] Driver path: C:\Users\284238\.cache\selenium\msedgedriver\win64\151.0.4129.78\msedgedriver.exe
+18:12:39 [DEBUG] Browser path: C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe
+18:12:39 [DEBUG] Started executable: `C:\Users\284238\.cache\selenium\msedgedriver\win64\151.0.4129.78\msedgedriver.exe` in a child process with pid: 17580 using 0 to output -3
+18:12:39 [DEBUG] POST http://localhost:57527/session {'capabilities': {'firstMatch': [{}], 'alwaysMatch': {'browserName': 'MicrosoftEdge', 'pageLoadStrategy': <PageLoadStrategy.normal: 'normal'>, 'goog:loggingPrefs': {'performance': 'ALL'}, 'browserVersion': None, 'ms:edgeOptions': {'excludeSwitches': ['enable-logging', 'enable-automation'], 'useAutomationExtension': False, 'extensions': [], 'binary': 'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe', 'args': ['--user-data-dir=C:\\Users\\284238\\.ftir_sbpr_tool\\browser_profile_edge', '--log-level=3', '--window-size=1920,1080', '--disable-popup-blocking']}}}}
+18:12:39 [DEBUG] Starting new HTTP connection (1): localhost:57527
+18:12:40 [DEBUG] http://localhost:57527 "POST /session HTTP/1.1" 500 0
+18:12:40 [DEBUG] Remote response: status=500 | data={"value":{"error":"session not created","message":"session not created: Chrome instance exited. Examine ChromeDriver verbose log to determine the cause.","stacktrace":"\tmsedgedriver!GetHandleVerifier [0x7ff7e9acaad5+e025]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9acab34+e084]\n\tmsedgedriver!GetHandleVerifier [0x7ff7ea182ff2+6c6542]\n\tmsedgedriver!(No symbol) [0x7ff7e94addbf]\n\tmsedgedriver!(No symbol) [0x7ff7e94a9bdd]\n\tmsedgedriver!(No symbol) [0x7ff7e94eacb3]\n\tmsedgedriver!(No symbol) [0x7ff7e94ea646]\n\tmsedgedriver!(No symbol) [0x7ff7e94b5bbc]\n\tmsedgedriver!(No symbol) [0x7ff7e94b4e16]\n\tmsedgedriver!(No symbol) [0x7ff7e94b59e3]\n\tmsedgedriver!(No symbol) [0x7ff7e971e2db]\n\tmsedgedriver!(No symbol) [0x7ff7e971a6f4]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9af77e5+3ad35]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9ae65a1+29af1]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9aeeee6+32436]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9ad2494+159e4]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9ad25b5+15b05]\n\tmsedgedriver!GetHandleVerifier [0x7ff7e9abeef3+2443]\n\tKERNEL32!BaseThreadInitThunk [0x7ff97605259d+1d]\n\tntdll!RtlUserThreadStart [0x7ff976c6afb8+28]\n"}} | headers=HTTPHeaderDict({'Content-Length': '1187', 'Content-Type': 'application/json; charset=utf-8', 'cache-control': 'no-cache'})
+18:12:40 [DEBUG] Finished Request
+18:12:42 [WARNING]   ✗ Browser driver unavailable (Could not start Microsoft Edge browser.
+Make sure Edge is installed and up to date.
+Error: Message: session not created: Chrome instance exited. Examine ChromeDriver verbose log to determine the cause.; For documentation on this error, please visit: https://www.selenium.dev/documentation/webdriver/troubleshooting/errors#sessionnotcreatedexception
+Stacktrace:
+	msedgedriver!GetHandleVerifier [0x7ff7e9acaad5+e025]
+	msedgedriver!GetHandleVerifier [0x7ff7e9acab34+e084]
+	msedgedriver!GetHandleVerifier [0x7ff7ea182ff2+6c6542]
+	msedgedriver!(No symbol) [0x7ff7e94addbf]
+	msedgedriver!(No symbol) [0x7ff7e94a9bdd]
+	msedgedriver!(No symbol) [0x7ff7e94eacb3]
+	msedgedriver!(No symbol) [0x7ff7e94ea646]
+	msedgedriver!(No symbol) [0x7ff7e94b5bbc]
+	msedgedriver!(No symbol) [0x7ff7e94b4e16]
+	msedgedriver!(No symbol) [0x7ff7e94b59e3]
+	msedgedriver!(No symbol) [0x7ff7e971e2db]
+	msedgedriver!(No symbol) [0x7ff7e971a6f4]
+	msedgedriver!GetHandleVerifier [0x7ff7e9af77e5+3ad35]
+	msedgedriver!GetHandleVerifier [0x7ff7e9ae65a1+29af1]
+	msedgedriver!GetHandleVerifier [0x7ff7e9aeeee6+32436]
+	msedgedriver!GetHandleVerifier [0x7ff7e9ad2494+159e4]
+	msedgedriver!GetHandleVerifier [0x7ff7e9ad25b5+15b05]
+	msedgedriver!GetHandleVerifier [0x7ff7e9abeef3+2443]
+	KERNEL32!BaseThreadInitThunk [0x7ff97605259d+1d]
+	ntdll!RtlUserThreadStart [0x7ff976c6afb8+28]
+). Will use only pre-downloaded attachments.
+18:12:42 [INFO] 
+Processing 1 FTIR records...
 
-======================================================================
-LAUNCHING DIAGNOSTIC PIPELINE WORKFLOW
-======================================================================
-18:06:27 [INFO] ======================================================================
-18:06:27 [INFO]   FTIR → SBPR Classification Pipeline
-18:06:27 [INFO] ======================================================================
-18:06:27 [INFO]   Input Excel    : C:/Users/284238/Desktop/tool/test.xlsx
-18:06:27 [INFO]   Output Excel   : C:/Users/284238/Desktop/tool/result\ftir_results.xlsx
-18:06:27 [INFO]   Pipeline Log   : C:/Users/284238/Desktop/tool/result\pipeline_log.txt
-18:06:27 [INFO]   Skip Browser   : False
-18:06:27 [INFO]   Started at     : 2026-08-13T18:06:27.417382
-18:06:27 [INFO] ======================================================================
-18:06:27 [INFO] Stage 0: Reading input Excel workbook...
-18:06:27 [INFO] Loaded 1 FTIR records from 'test.xlsx' (header row 1, 1 rows have hyperlinks)
-18:06:27 [INFO]   [TEST MODE] Truncated dataset to 1 row for rapid testing.
-18:06:27 [INFO]   Loaded 1 rows, 20 columns
-18:06:27 [INFO]   FTIR identifier column: 'FTIR No.'
-18:06:27 [INFO] Stage 0: Loading model checkpoints...
-18:06:28 [INFO] Loaded trained Stage 1 (resnet34) weights from 'C:\Users\284238\Desktop\tool\FTIR_Diagnostic_Engine\models\rust_demo.pth' onto device [cpu]
-18:06:28 [INFO]   ✓ Stage 1 Rust classifier loaded
-18:06:28 [INFO]   ✓ Stage 2 Metadata tree loaded (38 features)
-18:06:28 [INFO] Loaded Stage 2 Secondary CNN weights from 'C:\Users\284238\Desktop\tool\FTIR_Diagnostic_Engine\models\sbpr_image.pth' onto [cpu]
-18:06:28 [INFO]   ✓ Stage 2 Image CNN loaded
-18:06:28 [INFO] ✓ Portal URL loaded from config: ÿþY
+18:12:42 [INFO] ----------------------------------------------------------------------
+18:12:42 [INFO] [1/1] FTIR IN202310B06811: Processing...
+18:12:42 [INFO] FTIR folder 'IN202310B06811' yielded 0 total normalized images.
+18:12:42 [DEBUG] [1/1] FTIR IN202310B06811: Normalised 0 image(s)
+18:12:42 [INFO] [1/1] FTIR IN202310B06811: No images available, proceeding with metadata-only classification
+18:12:42 [DEBUG] Skipping 'Masked Model' / 'Model' columns (uninformative placeholder feature).
+18:12:42 [DEBUG] No ground truth label column found (inference mode or unlabelled test data).
+18:12:42 [INFO] [1/1] FTIR IN202310B06811: → UNCERTAIN_RUST | SBPR: SBIN202310B06811 | Meta: 100% | Img: 0%
+18:12:42 [INFO] ----------------------------------------------------------------------
+18:12:42 [INFO] Writing augmented results to 'C:/Users/284238/Desktop/tool/result\ftir_results.xlsx'...
+18:12:42 [INFO] Output report saved to C:/Users/284238/Desktop/tool/result\ftir_results.xlsx (1 records)
+18:12:42 [INFO]   ✓ Output Excel saved successfully
+18:12:42 [INFO] 
+18:12:42 [INFO] ======================================================================
+18:12:42 [INFO]   Pipeline Summary
+18:12:42 [INFO] ======================================================================
+18:12:42 [INFO]   Total FTIR Records   : 1
+18:12:42 [INFO]   Rust (→ Stage 2)     : 1
+18:12:42 [INFO]   Non-Rust (skipped)   : 0
+18:12:42 [INFO]   Flagged for Review   : 0
+18:12:42 [INFO]   Errors / Faults      : 0
+18:12:42 [INFO]   Missing Imgs/Warnings: 0
+18:12:42 [INFO]   Elapsed Time         : 3.9s
+18:12:42 [INFO]   Output File          : C:/Users/284238/Desktop/tool/result\ftir_results.xlsx
+18:12:42 [INFO]   Pipeline Log         : C:/Users/284238/Desktop/tool/result\pipeline_log.txt
+18:12:42 [INFO] ======================================================================
