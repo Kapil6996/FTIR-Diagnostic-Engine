@@ -460,7 +460,7 @@ class FtirSbprDesktopApp(tk.Tk):
         # Start execution thread
         self.pipeline_thread = threading.Thread(
             target=self._run_worker,
-            args=(input_file, out_file, profile, skip_web),
+            args=(input_file, out_file, profile, skip_web, self.var_test_mode.get()),
             daemon=True
         )
         self.pipeline_thread.start()
@@ -473,9 +473,14 @@ class FtirSbprDesktopApp(tk.Tk):
             self.btn_stop.config(state=tk.DISABLED)
             self.btn_run.config(state=tk.NORMAL)
 
-    def _run_worker(self, input_file, out_file, profile, skip_web):
+    def _run_worker(self, input_file, out_file, profile, skip_web, test_mode):
         """Worker thread executing the heavy diagnostic classification models."""
         try:
+            # Dynamically set outputs to be beside the user-selected output file
+            base_dir = os.path.dirname(out_file)
+            log_path = os.path.join(base_dir, "pipeline_log.txt")
+            ftir_records = os.path.join(base_dir, "ftir_records")
+            
             def on_progress(current_idx, total_count, label, stats):
                 if not self.is_running:
                     raise InterruptedError("Pipeline cancelled by operator.")
@@ -484,8 +489,11 @@ class FtirSbprDesktopApp(tk.Tk):
             result_df = run_pipeline(
                 input_path=input_file,
                 output_path=out_file,
+                log_path=log_path,
+                ftir_records_dir=ftir_records,
                 profile_dir=profile,
                 skip_browser=skip_web,
+                test_mode=test_mode,
                 progress_callback=on_progress
             )
             self.msg_queue.put(("DONE", out_file, result_df))
