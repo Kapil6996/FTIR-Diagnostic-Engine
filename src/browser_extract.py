@@ -459,13 +459,34 @@ def search_and_extract_ftir(driver: webdriver.Chrome, ftir_no: str, portal_url: 
             logger.error("Fallback Search Failed: Could not find any text input box on the portal page.")
             return {"page_url": driver.current_url, "subject_text": None, "attachment_urls": [], "page_title": ""}
 
-        # Type the FTIR number and hit Enter
+        # Type the FTIR number
         logger.info(f"Found search box. Entering FTIR {ftir_no}...")
         search_box.clear()
         search_box.send_keys(ftir_no)
         
-        from selenium.webdriver.common.keys import Keys
-        search_box.send_keys(Keys.RETURN)
+        # Try to find and click a 'Search' button instead of just hitting Enter
+        try:
+            logger.info("Attempting to find and click 'Search' button...")
+            search_btn_xpath = (
+                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search')] | "
+                "//input[(@type='submit' or @type='button') and contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search')] | "
+                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'search')]"
+            )
+            # Find all matching elements and click the first visible one
+            search_btns = driver.find_elements(By.XPATH, search_btn_xpath)
+            clicked = False
+            for btn in search_btns:
+                if btn.is_displayed():
+                    btn.click()
+                    clicked = True
+                    break
+            
+            if not clicked:
+                raise NoSuchElementException("No visible search button found")
+        except Exception:
+            logger.warning("Could not click a 'Search' button. Falling back to hitting ENTER key.")
+            from selenium.webdriver.common.keys import Keys
+            search_box.send_keys(Keys.RETURN)
         
         # Wait for the resulting page to load (wait for URL to change or body to refresh)
         time.sleep(3)
