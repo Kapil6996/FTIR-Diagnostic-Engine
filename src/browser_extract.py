@@ -714,7 +714,6 @@ def extract_via_response_form(
         logger.warning(f"Could not set download directory via CDP: {e}")
     
     # Search for the "Go to FTIR Response Form" button using multiple strategies
-    button = None
     button_strategies = [
         # Strategy 1: Exact text match (case-insensitive)
         "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
@@ -729,32 +728,60 @@ def extract_via_response_form(
         "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
     ]
     
-    for xpath in button_strategies:
+    def _find_button_in_context():
+        for xpath in button_strategies:
+            try:
+                elements = driver.find_elements(By.XPATH, xpath)
+                for el in elements:
+                    if el.is_displayed():
+                        logger.info(f"Found button with text: '{el.text.strip()}'")
+                        return el
+            except Exception:
+                continue
+        return None
+
+    def _recursive_iframe_search_and_click() -> bool:
+        # Search current context
+        btn = _find_button_in_context()
+        if btn:
+            try:
+                btn.click()
+                logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button. Waiting for download...")
+                return True
+            except Exception as e:
+                logger.warning(f"Found button but failed to click: {e}")
+        
+        # Search child iframes
         try:
-            elements = driver.find_elements(By.XPATH, xpath)
-            for el in elements:
-                if el.is_displayed():
-                    button = el
-                    logger.info(f"Found button with text: '{el.text.strip()}'")
-                    break
-            if button:
-                break
+            iframes = driver.find_elements(By.TAG_NAME, "iframe")
         except Exception:
-            continue
-    
-    if not button:
-        logger.warning(f"FTIR {ftir_no}: Could not find 'FTIR Response Form' button on the page.")
-        return []
+            return False
+            
+        for i in range(len(iframes)):
+            try:
+                frames = driver.find_elements(By.TAG_NAME, "iframe")
+                if i >= len(frames):
+                    continue
+                driver.switch_to.frame(frames[i])
+                if _recursive_iframe_search_and_click():
+                    return True
+                driver.switch_to.parent_frame()
+            except Exception:
+                try:
+                    driver.switch_to.default_content()
+                except:
+                    pass
+        return False
     
     # Record existing files in download dir before clicking
     existing_files = set(os.listdir(download_dir))
     
-    # Click the button
-    try:
-        button.click()
-        logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button. Waiting for download...")
-    except Exception as e:
-        logger.error(f"FTIR {ftir_no}: Failed to click button: {e}")
+    driver.switch_to.default_content()
+    clicked = _recursive_iframe_search_and_click()
+    driver.switch_to.default_content()
+    
+    if not clicked:
+        logger.warning(f"FTIR {ftir_no}: Could not find or click 'FTIR Response Form' button on the page or any iframes.")
         return []
     
     # Wait for the Excel file to download
