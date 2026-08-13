@@ -364,11 +364,24 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
         except NoSuchElementException:
             continue
 
-    # STRATEGY 3: Grab ALL <img> tags on the page (skip tiny icons)
+    # STRATEGY 3: Grab ALL <img> tags on the page (skip tiny icons, EXCEPT ftirWeb links)
     logger.info("Strategy 3: Scanning all <img> tags on page...")
     for img_tag in driver.find_elements(By.TAG_NAME, "img"):
         src = img_tag.get_attribute("src")
         if src and src not in seen and not src.startswith("data:"):
+            # If it's a known thumbnail endpoint, rewrite it to get the full file!
+            if "ftirwebthumbnail.do" in src.lower():
+                full_src = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', src, flags=re.IGNORECASE)
+                if full_src not in seen:
+                    seen.add(full_src)
+                    attachment_urls.append(full_src)
+                    logger.info(f"  Upgraded thumbnail to full file: {full_src[:80]}...")
+                continue
+            elif "ftirweb" in src.lower() or "ftirfile" in src.lower():
+                seen.add(src)
+                attachment_urls.append(src)
+                continue
+
             # Skip tiny icons (< 50px) by checking natural dimensions
             try:
                 w = img_tag.get_attribute("naturalWidth")
@@ -396,6 +409,17 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
             for img_tag in driver.find_elements(By.TAG_NAME, "img"):
                 src = img_tag.get_attribute("src")
                 if src and src not in seen and not src.startswith("data:"):
+                    if "ftirwebthumbnail.do" in src.lower():
+                        full_src = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', src, flags=re.IGNORECASE)
+                        if full_src not in seen:
+                            seen.add(full_src)
+                            attachment_urls.append(full_src)
+                            logger.info(f"  [Iframe] Upgraded thumbnail to full file: {full_src[:80]}...")
+                        continue
+                    elif "ftirweb" in src.lower() or "ftirfile" in src.lower():
+                        seen.add(src)
+                        attachment_urls.append(src)
+                        continue
                     seen.add(src)
                     attachment_urls.append(src)
         except Exception:
