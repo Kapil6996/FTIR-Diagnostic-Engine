@@ -866,6 +866,12 @@ def extract_via_response_form(
     
     if not clicked:
         logger.warning(f"FTIR {ftir_no}: Could not find or click 'FTIR Response Form' button on the page or any iframes.")
+        try:
+            screenshot_path = os.path.join(os.getcwd(), f"debug_missing_button_{ftir_no}.png")
+            driver.save_screenshot(screenshot_path)
+            logger.info(f"Saved a debug screenshot of the browser to {screenshot_path}")
+        except Exception:
+            pass
         return []
     
     # Wait for the Excel file to download
