@@ -274,19 +274,58 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
     # Allow dynamic content to settle
     time.sleep(2)
 
-    # FIX: Scroll the ENTIRE page to force lazy-loaded content (like attachments
-    # below the specification block) to render. The user confirmed that photos
-    # appear only after scrolling past ~12 rows of incident description.
-    try:
-        # Scroll to absolute bottom
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+    # FIX: Scroll the ENTIRE page (including all frames and inner divs) to force lazy-loaded content
+    def _force_scroll_all(d):
+        js_scroll_down = """
+        window.scrollTo(0, document.body.scrollHeight);
+        var elements = document.querySelectorAll('*');
+        for (var i = 0; i < elements.length; i++) {
+            if (elements[i].scrollHeight > elements[i].clientHeight) {
+                elements[i].scrollTop = elements[i].scrollHeight;
+            }
+        }
+        """
+        js_scroll_up = """
+        window.scrollTo(0, 0);
+        var elements = document.querySelectorAll('*');
+        for (var i = 0; i < elements.length; i++) {
+            if (elements[i].scrollHeight > elements[i].clientHeight) {
+                elements[i].scrollTop = 0;
+            }
+        }
+        """
+        def scroll_context(js_script):
+            try:
+                d.execute_script(js_script)
+            except Exception:
+                pass
+            try:
+                frames = d.find_elements(By.TAG_NAME, "iframe") + d.find_elements(By.TAG_NAME, "frame")
+                for idx in range(len(frames)):
+                    try:
+                        curr_frames = d.find_elements(By.TAG_NAME, "iframe") + d.find_elements(By.TAG_NAME, "frame")
+                        if idx >= len(curr_frames): continue
+                        d.switch_to.frame(curr_frames[idx])
+                        scroll_context(js_script)
+                        d.switch_to.parent_frame()
+                    except Exception:
+                        try: d.switch_to.default_content()
+                        except: pass
+            except Exception:
+                pass
+
+        # Scroll down everywhere
+        d.switch_to.default_content()
+        scroll_context(js_scroll_down)
+        time.sleep(2)
+        # Scroll up everywhere
+        d.switch_to.default_content()
+        scroll_context(js_scroll_up)
+        d.switch_to.default_content()
         time.sleep(1)
-        # Scroll back to top
-        driver.execute_script("window.scrollTo(0, 0);")
-        time.sleep(1)
-        logger.info("Page scrolled to bottom and back to trigger lazy-loading.")
-    except Exception:
-        pass
+
+    logger.info("Scrolling all frames and containers to trigger lazy-loading...")
+    _force_scroll_all(driver)
 
     page_title = driver.title or ""
     base_url = driver.current_url
