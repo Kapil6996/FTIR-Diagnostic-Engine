@@ -761,7 +761,10 @@ def process_ftir(
         for f in os.listdir(save_dir):
             file_path = os.path.join(save_dir, f)
             if os.path.isfile(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                except OSError as e:
+                    logger.warning(f"Could not remove cached file {file_path}: {e}")
 
     extraction_source = "None"
     attachment_urls = []
@@ -803,9 +806,12 @@ def process_ftir(
 
     for i, att_url in enumerate(attachment_urls):
         logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_urls)}")
-        saved = download_attachment(cookies, att_url, save_dir, driver=driver)
-        if saved:
-            downloaded.append(saved)
+        try:
+            saved = download_attachment(cookies, att_url, save_dir, driver=driver)
+            if saved:
+                downloaded.append(saved)
+        except Exception as e:
+            logger.error(f"Error downloading attachment {att_url}: {e}")
 
         # Polite delay between requests
         if i < len(attachment_urls) - 1:

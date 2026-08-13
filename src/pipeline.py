@@ -306,7 +306,7 @@ def run_pipeline(
                     logger.info(f"{row_label}: Downloaded {n_files} attachment(s)")
             except Exception as e:
                 err_str = str(e)
-                logger.warning(f"{row_label}: Browser extraction failed — {err_str}")
+                logger.exception(f"{row_label}: Browser extraction failed — {err_str}")
                 error_count += 1
                 if any(w in err_str.lower() for w in ("login", "auth", "cookie", "session", "unauthorized", "timeout", "sign in")):
                     pipeline_status = "FAILED_PORTAL_LOGIN"
