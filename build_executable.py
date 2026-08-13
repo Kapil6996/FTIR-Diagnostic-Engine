@@ -75,7 +75,7 @@ def build_app():
         "yaml",
         "PIL",
         "PIL.Image",
-        "fitz",
+        "pymupdf",
         "selenium",
         "selenium.webdriver",
         "selenium.webdriver.chrome.webdriver",

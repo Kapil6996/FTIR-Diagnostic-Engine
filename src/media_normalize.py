@@ -30,7 +30,7 @@ except ImportError:
     OPENCV_AVAILABLE = False
     logger.warning("OpenCV not available. Video frame extraction will be disabled.")
 
-import fitz  # PyMuPDF
+import pymupdf  # PyMuPDF
 
 # Cross-platform safe default directory for extracted frames
 _DEFAULT_TMP_DIR = "/tmp/ftir_frames" if os.name == "posix" else os.path.join(tempfile.gettempdir(), "ftir_frames")
@@ -158,7 +158,7 @@ def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0) -
         
         extracted_images = []
         try:
-            doc = fitz.open(abs_path)
+            doc = pymupdf.open(abs_path)
             for page_num in range(len(doc)):
                 page = doc[page_num]
                 image_list = page.get_images(full=True)
