@@ -32,7 +32,7 @@ import logging
 import argparse
 import mimetypes
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from urllib.parse import urlparse, urljoin, unquote
 
 import requests
@@ -60,44 +60,67 @@ _DEFAULT_PROFILE_DIR = os.path.join(
 # ---------------------------------------------------------------------------
 # Portal URL is read from config/portal_url.txt (gitignored so git pull
 # never overwrites your URL).  Falls back to this hardcoded default.
+DEFAULT_SIFT_PORTAL_URL = "https://sift.bizapps.suzuki/sift/"
+
+
+def _read_config_file_clean(filepath: str) -> str:
+    """Read a config file trying multiple encodings and cleaning whitespace/comments/BOM."""
+    if not os.path.isfile(filepath):
+        return ""
+    for enc in ["utf-8-sig", "utf-16", "utf-8", "latin-1", "cp1252"]:
+        try:
+            with open(filepath, "r", encoding=enc) as f:
+                content = f.read()
+            cleaned = content.replace("\x00", "").replace("\ufeff", "").strip()
+            for line in cleaned.splitlines():
+                line = line.strip().strip("'\"")
+                if line and not line.startswith("#"):
+                    return line
+        except Exception:
+            continue
+    return ""
+
+
 def _load_portal_url() -> str:
-    """Read portal URL from config/portal_url.txt, surviving git pull."""
-    # Look relative to THIS file (src/) → go one level up to project root
+    """Read portal URL from config/portal_url.txt, falling back to default SIFT URL."""
     _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_path = os.path.join(_project_root, "config", "portal_url.txt")
-    if os.path.isfile(config_path):
-        with open(config_path, "r") as f:
-            url = f.read().strip()
-        if url and url != "INSERT_URL_HERE":
+    candidates = [
+        os.path.join(_project_root, "config", "portal_url.txt"),
+        os.path.join(os.getcwd(), "config", "portal_url.txt"),
+        "config/portal_url.txt",
+    ]
+    for p in candidates:
+        url = _read_config_file_clean(p)
+        if url and url.startswith("http") and "YOUR_PORTAL_URL" not in url and "INSERT_URL" not in url:
             return url
-    # Also try CWD-relative path (for when run from project root)
-    if os.path.isfile("config/portal_url.txt"):
-        with open("config/portal_url.txt", "r") as f:
-            url = f.read().strip()
-        if url and url != "INSERT_URL_HERE":
-            return url
-    return "INSERT_URL_HERE"
+    return DEFAULT_SIFT_PORTAL_URL
 
 
 def _load_attachment_template() -> str:
     """Read exact attachment URL template from config/attachment_url_template.txt."""
     _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    config_path = os.path.join(_project_root, "config", "attachment_url_template.txt")
-    if os.path.isfile(config_path):
-        with open(config_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#"):
-                    if "http" in line and "{FTIR_NO}" in line:
-                        return line
+    candidates = [
+        os.path.join(_project_root, "config", "attachment_url_template.txt"),
+        os.path.join(os.getcwd(), "config", "attachment_url_template.txt"),
+        "config/attachment_url_template.txt",
+    ]
+    for config_path in candidates:
+        if os.path.isfile(config_path):
+            for enc in ["utf-8-sig", "utf-16", "utf-8", "latin-1", "cp1252"]:
+                try:
+                    with open(config_path, "r", encoding=enc) as f:
+                        for line in f:
+                            line = line.replace("\x00", "").replace("\ufeff", "").strip()
+                            if line and not line.startswith("#"):
+                                if "http" in line and "{FTIR_NO}" in line:
+                                    return line
+                except Exception:
+                    continue
     return ""
 
 
 PORTAL_SEARCH_URL = _load_portal_url()
-if PORTAL_SEARCH_URL == "INSERT_URL_HERE":
-    logger.warning("⚠️ Portal URL not configured! Edit config/portal_url.txt with your portal URL.")
-else:
-    logger.info(f"✓ Portal URL loaded from config: {PORTAL_SEARCH_URL[:40]}...")
+logger.info(f"✓ Portal URL loaded: {PORTAL_SEARCH_URL}")
 
 ATTACHMENT_URL_TEMPLATE = _load_attachment_template()
 if ATTACHMENT_URL_TEMPLATE:
@@ -185,10 +208,12 @@ def get_driver(
         "safebrowsing.enabled": True,
         "plugins.always_open_pdf_externally": True,
     }
-    edge_options.add_experimental_option("prefs", prefs)
-
-    # Enable Performance Logging to capture raw network requests!
-    edge_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+    # Enable Performance Logging if supported
+    try:
+        edge_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+        edge_options.set_capability("ms:loggingPrefs", {"performance": "ALL"})
+    except Exception:
+        pass
 
     try:
         driver = webdriver.Edge(options=edge_options)
@@ -683,83 +708,149 @@ def _wait_for_login_if_needed(driver: webdriver.Edge) -> None:
 def _navigate_to_ftir_detail_via_quick_search(
     driver: webdriver.Edge,
     ftir_no: str,
-    portal_url: str,
+    portal_url: Optional[str] = None,
 ) -> bool:
     """
     Navigate to the FTIR detail page using the exact popup-window chain
     proven to work on the live SIFT portal.
 
     Flow:
-      1. Navigate to portal URL → frameset loads
-      2. Switch to frame[1] (menuFrame)
+      1. Ensure portal is loaded (Menu frameset SYQAA710E01SFnd.do)
+      2. Dynamically scan frames for the Menu tree and 'QUICK SEARCH'
       3. Click Quick Search → new popup window opens
-      4. Enter FTIR number in #txtSel0, click #searchbtn → another popup opens
-      5. The FTIR detail page is now the active window
+      4. Enter FTIR number in #txtSel0, click #searchbtn → FTIR detail popup opens
+      5. Switch to and confirm FTIR detail window
 
     Returns True if we successfully land on the FTIR detail window.
-    The driver will be pointing at the FTIR detail window upon success.
     """
-    logger.info(f"FTIR {ftir_no}: Navigating via Quick Search popup chain...")
+    if not portal_url or not portal_url.startswith("http") or "YOUR_PORTAL_URL" in portal_url or "INSERT_URL" in portal_url:
+        portal_url = PORTAL_SEARCH_URL or DEFAULT_SIFT_PORTAL_URL
 
-    # ── Step 1: Navigate to portal ──────────────────────────────────────
+    logger.info(f"FTIR {ftir_no}: Navigating via Quick Search popup chain on portal {portal_url}...")
+
+    # ── Step 1: Navigate to portal (or reuse existing portal session) ───
     _go_to_main_window(driver)
-    driver.get(portal_url)
-
+    current_url = ""
     try:
-        WebDriverWait(driver, _PAGE_TIMEOUT).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-    except TimeoutException:
-        logger.error("Portal page load timed out.")
-        return False
+        current_url = driver.current_url.lower()
+    except Exception:
+        pass
 
-    time.sleep(2)
+    if "sift" not in current_url and "bizapps.suzuki" not in current_url:
+        logger.info(f"FTIR {ftir_no}: Loading portal base URL: {portal_url}")
+        driver.get(portal_url)
+        time.sleep(2)
 
-    # ── Check for login ─────────────────────────────────────────────────
+    # ── Check for SSO login ─────────────────────────────────────────────
     _wait_for_login_if_needed(driver)
 
-    # ── Step 2: Switch to frame[1] (menuFrame) ──────────────────────────
+    # ── Step 2: Switch to Menu frame (dynamically locate frame with Quick Search) ──
+    _go_to_main_window(driver)
+    driver.switch_to.default_content()
+    
+    found_menu_frame = False
     try:
-        _go_to_main_window(driver)
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_all_elements_located((By.TAG_NAME, "frame"))
-        )
-        driver.switch_to.frame(1)
-        logger.info(f"FTIR {ftir_no}: Switched to menuFrame (frame[1])")
+        frames = driver.find_elements(By.TAG_NAME, "frame") + driver.find_elements(By.TAG_NAME, "iframe")
+        for idx, frame in enumerate(frames):
+            try:
+                driver.switch_to.default_content()
+                driver.switch_to.frame(frame)
+                # Check for Quick Search keyword or element
+                qs_matches = driver.find_elements(By.XPATH, "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'quick search')]")
+                if qs_matches:
+                    logger.info(f"FTIR {ftir_no}: Located 'QUICK SEARCH' in frame index {idx}")
+                    found_menu_frame = True
+                    break
+            except Exception:
+                continue
     except Exception as e:
-        logger.error(f"FTIR {ftir_no}: Could not switch to frame[1]: {e}")
-        return False
+        logger.debug(f"Frame scanning exception: {e}")
+
+    if not found_menu_frame:
+        # Fallback to frame index 1 (menuFrame)
+        driver.switch_to.default_content()
+        try:
+            driver.switch_to.frame(1)
+            found_menu_frame = True
+            logger.info(f"FTIR {ftir_no}: Switched to default menuFrame (index 1)")
+        except Exception:
+            try:
+                driver.switch_to.frame("menuFrame")
+                found_menu_frame = True
+                logger.info(f"FTIR {ftir_no}: Switched to frame by name 'menuFrame'")
+            except Exception as e:
+                logger.error(f"FTIR {ftir_no}: Could not switch to menuFrame: {e}")
+                return False
 
     # ── Step 3: Click Quick Search ──────────────────────────────────────
-    old_windows = set(driver.window_handles)
-    try:
-        # Exact XPath from proven reference script
-        quick_search = WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((
-                By.XPATH,
-                "//div[@id='group2content']//table[@class='NoBorderTable']//tr/td[2][contains(., 'QUICK SEARCH')]"
-            ))
-        )
-        quick_search.click()
-        logger.info(f"FTIR {ftir_no}: Clicked Quick Search")
-    except Exception as e:
-        logger.error(f"FTIR {ftir_no}: Could not find/click Quick Search: {e}")
+    old_windows = list(driver.window_handles)
+    quick_search_clicked = False
+    
+    qs_selectors = [
+        "//div[@id='group2content']//table[@class='NoBorderTable']//tr/td[2][contains(., 'QUICK SEARCH')]",
+        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'quick search')]",
+        "//*[contains(translate(@title, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'quick search')]",
+        "//a[contains(., 'QUICK SEARCH') or contains(., 'Quick Search')]",
+        "//td[contains(., 'QUICK SEARCH') or contains(., 'Quick Search')]",
+    ]
+
+    for xpath in qs_selectors:
+        try:
+            elements = driver.find_elements(By.XPATH, xpath)
+            for el in elements:
+                if el.is_displayed():
+                    try:
+                        driver.execute_script("arguments[0].click();", el)
+                        logger.info(f"FTIR {ftir_no}: Clicked Quick Search via JS")
+                        quick_search_clicked = True
+                        break
+                    except Exception:
+                        el.click()
+                        logger.info(f"FTIR {ftir_no}: Clicked Quick Search via native click")
+                        quick_search_clicked = True
+                        break
+            if quick_search_clicked:
+                break
+        except Exception:
+            continue
+
+    if not quick_search_clicked:
+        logger.error(f"FTIR {ftir_no}: Could not find or click 'QUICK SEARCH' element in menu")
         driver.switch_to.default_content()
         return False
 
     driver.switch_to.default_content()
 
     # ── Step 4: Switch to Quick Search popup window ─────────────────────
-    try:
-        WebDriverWait(driver, 20).until(
-            lambda d: len(set(d.window_handles) - old_windows) > 0
-        )
-        new_window = list(set(driver.window_handles) - old_windows)[0]
-        driver.switch_to.window(new_window)
-        logger.info(f"FTIR {ftir_no}: Switched to Quick Search popup window")
-    except TimeoutException:
-        logger.error(f"FTIR {ftir_no}: Quick Search popup window did not open.")
+    quick_search_window = None
+    start_wait = time.time()
+    while time.time() - start_wait < 20:
+        current_handles = driver.window_handles
+        new_handles = [h for h in current_handles if h not in old_windows]
+        if new_handles:
+            quick_search_window = new_handles[0]
+            break
+        # Also check if any existing window has the #txtSel0 element
+        for h in current_handles:
+            if h != _main_window_handle:
+                try:
+                    driver.switch_to.window(h)
+                    if len(driver.find_elements(By.ID, "txtSel0")) > 0:
+                        quick_search_window = h
+                        break
+                except Exception:
+                    continue
+        if quick_search_window:
+            break
+        time.sleep(1)
+
+    if not quick_search_window:
+        logger.error(f"FTIR {ftir_no}: Quick Search popup window did not appear")
         return False
+
+    driver.switch_to.window(quick_search_window)
+    logger.info(f"FTIR {ftir_no}: Switched to Quick Search popup window ({quick_search_window})")
+    time.sleep(1)
 
     # ── Step 5: Enter FTIR number in #txtSel0 ──────────────────────────
     try:
@@ -768,51 +859,73 @@ def _navigate_to_ftir_detail_via_quick_search(
         )
         search_box.clear()
         search_box.send_keys(str(ftir_no))
-        logger.info(f"FTIR {ftir_no}: Entered FTIR number in #txtSel0")
+        logger.info(f"FTIR {ftir_no}: Entered '{ftir_no}' into #txtSel0")
     except Exception as e:
-        logger.error(f"FTIR {ftir_no}: Could not find #txtSel0 search box: {e}")
+        logger.error(f"FTIR {ftir_no}: Could not locate search box #txtSel0: {e}")
         return False
 
     # ── Step 6: Click #searchbtn ────────────────────────────────────────
-    old_windows = set(driver.window_handles)
+    pre_search_windows = list(driver.window_handles)
+    search_clicked = False
     try:
-        WebDriverWait(driver, 20).until(
-            EC.element_to_be_clickable((By.ID, "searchbtn"))
-        ).click()
+        search_btn = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.ID, "searchbtn"))
+        )
+        try:
+            driver.execute_script("arguments[0].click();", search_btn)
+            search_clicked = True
+        except Exception:
+            search_btn.click()
+            search_clicked = True
         logger.info(f"FTIR {ftir_no}: Clicked #searchbtn")
     except Exception as e:
-        logger.error(f"FTIR {ftir_no}: Could not find/click #searchbtn: {e}")
+        logger.error(f"FTIR {ftir_no}: Could not click #searchbtn: {e}")
         return False
 
     # ── Step 7: Switch to FTIR detail popup window ─────────────────────
-    try:
-        WebDriverWait(driver, 20).until(
-            lambda d: len(set(d.window_handles) - old_windows) > 0
-        )
-        response_window = list(set(driver.window_handles) - old_windows)[0]
-        driver.switch_to.window(response_window)
-        logger.info(f"FTIR {ftir_no}: ✓ Switched to FTIR detail popup window")
-        time.sleep(2)  # Let the FTIR detail page render
-        return True
-    except TimeoutException:
-        logger.error(f"FTIR {ftir_no}: FTIR detail popup window did not open (invalid FTIR number?).")
+    detail_window = None
+    start_wait = time.time()
+    while time.time() - start_wait < 30:
+        current_handles = driver.window_handles
+        new_handles = [h for h in current_handles if h not in pre_search_windows]
+        if new_handles:
+            detail_window = new_handles[0]
+            break
+        # Also check window titles / URLs for FTIR detail indicators
+        for h in current_handles:
+            if h not in [_main_window_handle, quick_search_window]:
+                try:
+                    driver.switch_to.window(h)
+                    cur_url = driver.current_url.lower()
+                    cur_title = driver.title.lower()
+                    if "syqaa090" in cur_url or "ftir" in cur_title or len(driver.find_elements(By.ID, "PYQAA030E00S")) > 0:
+                        detail_window = h
+                        break
+                except Exception:
+                    continue
+        if detail_window:
+            break
+        time.sleep(1)
+
+    if not detail_window:
+        logger.error(f"FTIR {ftir_no}: FTIR detail popup window did not open (invalid FTIR number or search timeout)")
         return False
 
+    driver.switch_to.window(detail_window)
+    logger.info(f"FTIR {ftir_no}: ✓ Switched to FTIR detail popup window ({detail_window})")
+    time.sleep(2)
+    return True
 
-def search_and_extract_ftir(driver: webdriver.Edge, ftir_no: str, portal_url: str = PORTAL_SEARCH_URL) -> Dict[str, Any]:
+
+def search_and_extract_ftir(driver: webdriver.Edge, ftir_no: str, portal_url: Optional[str] = None) -> Dict[str, Any]:
     """
     Navigate to the FTIR detail page using the Quick Search popup chain,
     then extract attachment URLs from the resulting page.
-
-    Uses the exact proven navigation flow:
-      Portal → frame[1] → Quick Search → popup → #txtSel0/#searchbtn → detail popup
     """
-    logger.info(f"Quick Search Triggered: portal={portal_url} ftir={ftir_no}")
+    if not portal_url:
+        portal_url = PORTAL_SEARCH_URL or DEFAULT_SIFT_PORTAL_URL
 
-    if not portal_url or portal_url == "INSERT_URL_HERE":
-        logger.error("PORTAL_SEARCH_URL is not configured. Edit config/portal_url.txt.")
-        return {"page_url": driver.current_url, "subject_text": None, "attachment_urls": [], "page_title": ""}
-
+    logger.info(f"Quick Search Triggered: ftir={ftir_no}")
     success = _navigate_to_ftir_detail_via_quick_search(driver, ftir_no, portal_url)
 
     if not success:
@@ -820,7 +933,6 @@ def search_and_extract_ftir(driver: webdriver.Edge, ftir_no: str, portal_url: st
         _close_extra_windows(driver)
         return {"page_url": driver.current_url, "subject_text": None, "attachment_urls": [], "page_title": ""}
 
-    # We are now on the FTIR detail page — extract attachments from DOM
     try:
         result = extract_ftir_page(driver, driver.current_url, ftir_no=ftir_no)
         return result
@@ -842,48 +954,74 @@ def _get_edge_download_dir(driver: webdriver.Edge) -> str:
     return download_dir
 
 
-def _wait_for_download(download_dir: str, timeout: int = 120) -> Optional[str]:
+def _wait_for_download(download_dirs: Union[str, List[str]], timeout: int = 120) -> Optional[str]:
     """
-    Wait for a new file to appear in download_dir and finish downloading.
-    Returns the path of the downloaded file, or None on timeout.
+    Wait for a new completed Excel file (.xlsx, .xls, .xlsm) to appear in download_dirs.
+    Checks both the app's temp_downloads folder and the user's default ~/Downloads folder.
     """
-    # Record existing files
-    existing = set(os.listdir(download_dir))
+    if isinstance(download_dirs, str):
+        dirs = [download_dirs]
+    else:
+        dirs = list(download_dirs)
     
-    start = time.time()
-    new_file = None
-    while time.time() - start < timeout:
-        current = set(os.listdir(download_dir))
-        new_files = current - existing
-        
-        # Filter out partial download files (.crdownload, .part, .tmp)
-        completed = [
-            f for f in new_files
-            if not f.endswith(('.crdownload', '.part', '.tmp', '.download'))
-        ]
-        
-        if completed:
-            # Pick the newest completed file
-            new_file = max(
-                completed,
-                key=lambda f: os.path.getmtime(os.path.join(download_dir, f))
-            )
-            # Wait a moment to ensure writing is complete
-            path = os.path.join(download_dir, new_file)
-            prev_size = -1
-            for _ in range(5):
-                time.sleep(1)
-                curr_size = os.path.getsize(path)
-                if curr_size == prev_size and curr_size > 0:
-                    logger.info(f"Download complete: {new_file} ({curr_size:,} bytes)")
-                    return path
-                prev_size = curr_size
-            # File seems stable
-            return path
-        
-        time.sleep(2)
-    
-    logger.warning(f"Download timed out after {timeout}s")
+    # Add user's system Downloads folder as safe fallback
+    user_downloads = os.path.expanduser("~/Downloads")
+    if os.path.isdir(user_downloads) and user_downloads not in dirs:
+        dirs.append(user_downloads)
+
+    # Record baseline state of all directories
+    baseline_files = {}
+    for d in dirs:
+        if os.path.isdir(d):
+            try:
+                baseline_files[d] = set(os.listdir(d))
+            except Exception:
+                baseline_files[d] = set()
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        for d in dirs:
+            if not os.path.isdir(d):
+                continue
+            try:
+                current_files = set(os.listdir(d))
+            except Exception:
+                continue
+
+            new_files = current_files - baseline_files.get(d, set())
+            
+            # Filter for completed Excel files
+            completed_excel = [
+                f for f in new_files
+                if f.lower().endswith(('.xlsx', '.xls', '.xlsm'))
+                and not f.endswith(('.crdownload', '.part', '.tmp', '.download'))
+            ]
+            
+            if completed_excel:
+                # Pick the newest file
+                newest = max(
+                    completed_excel,
+                    key=lambda f: os.path.getmtime(os.path.join(d, f))
+                )
+                full_path = os.path.join(d, newest)
+                
+                # Verify file writing has stabilized
+                prev_size = -1
+                for _ in range(4):
+                    time.sleep(0.5)
+                    try:
+                        curr_size = os.path.getsize(full_path)
+                        if curr_size == prev_size and curr_size > 0:
+                            logger.info(f"Download complete: {newest} ({curr_size:,} bytes) in {d}")
+                            return full_path
+                        prev_size = curr_size
+                    except Exception:
+                        pass
+                return full_path
+
+        time.sleep(1)
+
+    logger.warning(f"Download wait timed out after {timeout}s across directories: {dirs}")
     return None
 
 
@@ -1181,32 +1319,156 @@ def extract_via_response_form(
         except Exception:
             pass
             
+def _is_on_ftir_detail_page(driver: webdriver.Edge) -> bool:
+    """Check if the browser is currently positioned on an FTIR detail page."""
+    try:
+        cur_url = driver.current_url.lower()
+        cur_title = driver.title.lower()
+        if "syqaa710" in cur_url or "menu" in cur_title or "login" in cur_url or "auth" in cur_url:
+            return False
+        if "syqaa090" in cur_url or "ftir" in cur_title or "detail" in cur_title:
+            return True
+        if len(driver.find_elements(By.ID, "PYQAA030E00S")) > 0:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def extract_via_response_form(
+    driver: webdriver.Edge,
+    ftir_no: str,
+    save_dir: str,
+    url: Optional[str] = None,
+) -> List[str]:
+    """
+    Strategy: Navigate to the FTIR Detail page, click the 'Go to FTIR Response Form'
+    button (#PYQAA030E00S), which downloads the official Response Form Excel,
+    and extract all embedded photos and metadata from it.
+    """
+    logger.info(f"FTIR {ftir_no}: [STRATEGY: RESPONSE FORM] Initiating Response Form download...")
+    
+    download_dir = _get_edge_download_dir(driver)
+    
+    # ── Step 1: Ensure browser is positioned on the FTIR detail window ──
+    on_detail = _is_on_ftir_detail_page(driver)
+    
+    if not on_detail:
+        # If url provided and contains detail page identifier, try direct link
+        if url and url.startswith("http") and "syqaa090" in url.lower():
+            try:
+                logger.info(f"FTIR {ftir_no}: Trying direct hyperlink: {url}")
+                driver.get(url)
+                _wait_for_login_if_needed(driver)
+                time.sleep(2)
+                on_detail = _is_on_ftir_detail_page(driver)
+            except Exception as e:
+                logger.debug(f"Direct hyperlink load failed: {e}")
+        
+        # If still not on detail page (e.g. redirected to menu or direct URL failed)
+        if not on_detail:
+            logger.info(f"FTIR {ftir_no}: Navigating to FTIR detail window via Quick Search popup chain...")
+            success = _navigate_to_ftir_detail_via_quick_search(driver, ftir_no)
+            if not success:
+                logger.warning(f"FTIR {ftir_no}: Could not navigate to FTIR detail window via Quick Search")
+                _close_extra_windows(driver)
+                return []
+            on_detail = True
+
+    # Configure Edge to download to our known directory (via CDP command on active window)
+    try:
+        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+            "behavior": "allow",
+            "downloadPath": os.path.abspath(download_dir),
+        })
+        logger.info(f"Download directory set via CDP to: {download_dir}")
+    except Exception as e:
+        logger.debug(f"CDP downloadPath configuration: {e}")
+
+    time.sleep(2)
+
+    button_strategies = [
+        "//*[@id='PYQAA030E00S']",
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
+        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'go to ftir')]",
+        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+    ]
+
+    def _find_button_in_context():
+        try:
+            btn = driver.find_element(By.ID, "PYQAA030E00S")
+            if btn.is_displayed() or btn.is_enabled():
+                logger.info(f"✓ Found 'FTIR Response Form' button by exact ID #PYQAA030E00S")
+                return btn
+        except Exception:
+            pass
+
+        for xpath in button_strategies:
+            try:
+                elements = driver.find_elements(By.XPATH, xpath)
+                for el in elements:
+                    if el.is_displayed():
+                        logger.info(f"Found button with text/value: '{el.text.strip() or el.get_attribute('value')}'")
+                        return el
+            except Exception:
+                continue
+
+        js_script = """
+        function findButton(root) {
+            var byId = document.getElementById('PYQAA030E00S');
+            if (byId) return byId;
+            let elements = Array.from(root.querySelectorAll('*'));
+            for (let el of elements) {
+                if (el.shadowRoot) {
+                    let shadowBtn = findButton(el.shadowRoot);
+                    if (shadowBtn) return shadowBtn;
+                }
+                let text = ((el.innerText || el.value || el.title || el.alt || el.name || '')).toLowerCase();
+                if (text.includes('response form') || text.includes('go to ftir') || text.includes('ftir response')) {
+                    if (el.offsetWidth > 0 || el.offsetHeight > 0) {
+                        return el;
+                    }
+                }
+            }
+            return null;
+        }
+        return findButton(document);
+        """
+        try:
+            btn = driver.execute_script(js_script)
+            if btn:
+                logger.info(f"JS brute-force search found button: {btn.tag_name}")
+                return btn
+        except Exception:
+            pass
         return None
 
     def _recursive_iframe_search_and_click() -> bool:
-        # Search current context
         btn = _find_button_in_context()
         if btn:
             try:
-                # Use JavaScript click to bypass ANY overlays, stick headers, or "ElementNotInteractable" errors
                 driver.execute_script("arguments[0].click();", btn)
                 logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button using JavaScript. Waiting for download...")
                 return True
             except Exception as e:
-                logger.warning(f"Found button but JS click failed: {e}. Trying native click...")
+                logger.warning(f"JS click failed: {e}. Trying native click...")
                 try:
                     btn.click()
                     logger.info(f"FTIR {ftir_no}: Clicked 'FTIR Response Form' button using native click. Waiting for download...")
                     return True
                 except Exception as e2:
                     logger.warning(f"Native click also failed: {e2}")
-        
-        # Search child iframes and frames
+
         try:
             frames_tags = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
         except Exception:
             return False
-            
+
         for i in range(len(frames_tags)):
             try:
                 current_frames = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
@@ -1219,93 +1481,55 @@ def extract_via_response_form(
             except Exception:
                 try:
                     driver.switch_to.default_content()
-                except:
+                except Exception:
                     pass
         return False
-    
-    # Record existing files in download dir before clicking
-    existing_files = set(os.listdir(download_dir))
-    
+
     driver.switch_to.default_content()
     clicked = _recursive_iframe_search_and_click()
     driver.switch_to.default_content()
-    
-    # ── FALLBACK: If button not found on current page, use Quick Search popup chain ──
+
     if not clicked:
-        logger.info(f"FTIR {ftir_no}: Button not found on current page. "
-                     f"Trying Quick Search popup chain to navigate to correct FTIR detail window...")
-        portal_url = PORTAL_SEARCH_URL
-        if portal_url and portal_url != "INSERT_URL_HERE":
-            success = _navigate_to_ftir_detail_via_quick_search(driver, ftir_no, portal_url)
-            if success:
-                # Re-configure download dir for this new window
-                try:
-                    driver.execute_cdp_cmd("Page.setDownloadBehavior", {
-                        "behavior": "allow",
-                        "downloadPath": os.path.abspath(download_dir),
-                    })
-                except Exception:
-                    pass
-                time.sleep(3)
-                # Try finding the button again in the new window
-                clicked = _recursive_iframe_search_and_click()
-                driver.switch_to.default_content()
-    
-    if not clicked:
-        logger.warning(f"FTIR {ftir_no}: Could not find or click 'FTIR Response Form' button "
-                       f"on the page, iframes, or via Quick Search popup chain.")
+        logger.warning(f"FTIR {ftir_no}: Could not find or click 'FTIR Response Form' button.")
         try:
             screenshot_path = os.path.join(os.getcwd(), f"debug_missing_button_{ftir_no}.png")
             driver.save_screenshot(screenshot_path)
-            logger.info(f"Saved a debug screenshot of the browser to {screenshot_path}")
         except Exception:
             pass
         _close_extra_windows(driver)
         return []
-    
-    # Wait for the Excel file to download
-    downloaded_file = _wait_for_download(download_dir, timeout=120)
-    
+
+    # Wait for the Excel file to download (checks both temp_downloads and ~/Downloads)
+    downloaded_file = _wait_for_download([download_dir, os.path.expanduser("~/Downloads")], timeout=120)
+
     if not downloaded_file:
         logger.warning(f"FTIR {ftir_no}: Response Form Excel download failed or timed out.")
         _close_extra_windows(driver)
         return []
-    
-    # Check if it's an Excel file
-    if not downloaded_file.lower().endswith(('.xlsx', '.xls')):
-        logger.warning(f"FTIR {ftir_no}: Downloaded file is not Excel: {downloaded_file}")
-        _close_extra_windows(driver)
-        return []
-    
+
     logger.info(f"FTIR {ftir_no}: Response Form Excel downloaded: {downloaded_file}")
-    
+
     # Extract images from the Excel file
     extracted_images = _extract_images_from_xlsx(downloaded_file, save_dir)
-    
-    # Keep the downloaded Excel — pipeline may use it for metadata extraction
-    # Move it to the FTIR save directory instead of deleting
+
+    # Save a copy of the downloaded Excel into ftir_records/<ftir_no>/
     try:
         import shutil
         excel_dest = os.path.join(save_dir, f"{ftir_no}_response_form.xlsx")
         os.makedirs(save_dir, exist_ok=True)
-        shutil.move(downloaded_file, excel_dest)
-        logger.info(f"Moved Response Form Excel to: {excel_dest}")
-    except Exception:
-        # Fall back to deleting if move fails
-        try:
-            os.remove(downloaded_file)
-            logger.info(f"Cleaned up temp Excel file: {downloaded_file}")
-        except OSError:
-            pass
-    
+        shutil.copy2(downloaded_file, excel_dest)
+        logger.info(f"Saved Response Form Excel copy to: {excel_dest}")
+    except Exception as e:
+        logger.debug(f"Excel copy issue: {e}")
+
     # Clean up popup windows — return to main window
     _close_extra_windows(driver)
-    
+
     if extracted_images:
         logger.info(f"FTIR {ftir_no}: ✓ Successfully extracted {len(extracted_images)} images from Response Form Excel!")
     else:
         logger.warning(f"FTIR {ftir_no}: Response Form Excel contained no extractable images.")
-    
+
     return extracted_images
 
 # ---------------------------------------------------------------------------
@@ -1595,46 +1819,35 @@ def process_ftir(
     attachment_urls = []
     page_info = {"subject_text": None}
 
-    # ── Extract page ───────────────────────────────────────────────────
-    if url and url.startswith("http"):
-        try:
-            logger.info(f"FTIR {ftir_no}: [EXTRACTION SOURCE: EXCEL HYPERLINK] Trying direct URL.")
-            page_info = extract_ftir_page(driver, url, ftir_no=ftir_no)
-            attachment_urls = page_info["attachment_urls"]
-            if attachment_urls:
-                extraction_source = "Hyperlink"
-                logger.info(f"FTIR {ftir_no}: Successfully found attachments via Excel hyperlink.")
-        except Exception as e:
-            logger.warning(f"FTIR {ftir_no}: Initial extraction failed ({e}). Triggering fallback search.")
-            attachment_urls = []
-    else:
-        logger.info(f"FTIR {ftir_no}: No hyperlink URL in Excel. Going directly to Quick Search.")
-
-    if not attachment_urls:
-        logger.warning(f"FTIR {ftir_no}: [EXTRACTION SOURCE: QUICK SEARCH] Attempting portal search fallback.")
-        fallback_info = search_and_extract_ftir(driver, ftir_no)
-        attachment_urls = fallback_info["attachment_urls"]
-        if attachment_urls:
-            extraction_source = "Quick Search"
-            logger.info(f"FTIR {ftir_no}: Successfully found attachments via Quick Search fallback.")
-        
-        # If the fallback found a subject text, use it
-        if fallback_info.get("subject_text"):
-            page_info["subject_text"] = fallback_info["subject_text"]
-            
-        if not attachment_urls:
-            logger.warning(f"FTIR {ftir_no}: Fallback search also failed to find attachments.")
-
-    # ── Try Excel Response Form Strategy First ─────────────────────────
-    extracted_images = extract_via_response_form(driver, ftir_no, save_dir)
+    # ── PRIMARY STRATEGY: Excel Response Form Download & Image Extraction ──
+    logger.info(f"FTIR {ftir_no}: [PRIMARY STRATEGY] Extracting images via FTIR Response Form Excel...")
+    extracted_images = extract_via_response_form(driver, ftir_no, save_dir, url=url)
+    
     if extracted_images:
         extraction_source = "Excel Response Form"
         downloaded = extracted_images
+        logger.info(f"FTIR {ftir_no}: ✓ Response Form strategy succeeded with {len(downloaded)} image(s)")
     else:
-        # ── Fallback to HTTP Download of DOM scraped URLs ──────────────
+        logger.warning(f"FTIR {ftir_no}: Response Form yielded no images. Attempting DOM scraping fallback...")
+        if url and url.startswith("http"):
+            try:
+                page_info = extract_ftir_page(driver, url, ftir_no=ftir_no)
+                attachment_urls = page_info["attachment_urls"]
+                if attachment_urls:
+                    extraction_source = "Hyperlink"
+            except Exception as e:
+                logger.debug(f"Direct page extract fallback exception: {e}")
+
+        if not attachment_urls:
+            fallback_info = search_and_extract_ftir(driver, ftir_no)
+            attachment_urls = fallback_info["attachment_urls"]
+            if attachment_urls:
+                extraction_source = "Quick Search"
+            if fallback_info.get("subject_text"):
+                page_info["subject_text"] = fallback_info["subject_text"]
+
         cookies = _get_browser_cookies_for_requests(driver)
         downloaded: List[str] = []
-
         for i, att_url in enumerate(attachment_urls):
             logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_urls)}")
             try:
@@ -1643,8 +1856,6 @@ def process_ftir(
                     downloaded.append(saved)
             except Exception as e:
                 logger.error(f"Error downloading attachment {att_url}: {e}")
-
-            # Polite delay between requests
             if i < len(attachment_urls) - 1:
                 time.sleep(_REQUEST_DELAY)
 
