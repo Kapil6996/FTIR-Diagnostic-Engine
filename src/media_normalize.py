@@ -38,6 +38,7 @@ _DEFAULT_TMP_DIR = "/tmp/ftir_frames" if os.name == "posix" else os.path.join(te
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".heic"}
 VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".wmv", ".3gp", ".webm"}
 PDF_EXTENSIONS = {".pdf"}
+EXCEL_EXTENSIONS = {".xlsx", ".xls", ".xlsm"}
 
 
 def _get_output_dir_for_file(filepath: str, base_tmp_dir: str = _DEFAULT_TMP_DIR) -> str:
@@ -197,7 +198,25 @@ def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0) -
             logger.error(f"Error processing PDF {abs_path}: {e}")
             return []
 
-    # 4. Unrecognised / Non-Visual Attachment
+    # 4. Excel Documents (Embedded Images Extraction from Response Form)
+    if ext in EXCEL_EXTENSIONS:
+        out_dir = _get_output_dir_for_file(abs_path)
+        existing_files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f))]
+        if existing_files:
+            logger.info(f"Using {len(existing_files)} cached images for Excel '{os.path.basename(abs_path)}'")
+            return sorted(existing_files)
+
+        logger.info(f"Extracting images from Excel '{os.path.basename(abs_path)}' to {out_dir}")
+        try:
+            from src.browser_extract import _extract_images_from_xlsx
+            extracted_images = _extract_images_from_xlsx(abs_path, out_dir)
+            logger.info(f"  -> Extracted {len(extracted_images)} image(s) from Excel.")
+            return extracted_images
+        except Exception as e:
+            logger.error(f"Error extracting images from Excel {abs_path}: {e}")
+            return []
+
+    # 5. Unrecognised / Non-Visual Attachment
     logger.warning(f"Skipping non-visual attachment format '{ext}' for file: {os.path.basename(abs_path)}")
     return []
 

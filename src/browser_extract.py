@@ -174,6 +174,19 @@ def get_driver(
     # Disable pop-up blocker so download dialogs don't interfere
     edge_options.add_argument("--disable-popup-blocking")
 
+    # Set default download directory and disable prompt dialogs
+    _project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_download_dir = os.path.join(_project_root, "temp_downloads")
+    os.makedirs(default_download_dir, exist_ok=True)
+    prefs = {
+        "download.default_directory": os.path.abspath(default_download_dir),
+        "download.prompt_for_download": False,
+        "download.directory_upgrade": True,
+        "safebrowsing.enabled": True,
+        "plugins.always_open_pdf_externally": True,
+    }
+    edge_options.add_experimental_option("prefs", prefs)
+
     # Enable Performance Logging to capture raw network requests!
     edge_options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
@@ -876,52 +889,168 @@ def _wait_for_download(download_dir: str, timeout: int = 120) -> Optional[str]:
 
 def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
     """
-    Extract embedded images from an Excel .xlsx file.
+    Extract embedded images from an Excel (.xlsx, .xlsm, or .xls) file.
     
-    .xlsx files are ZIP archives. Images are stored in xl/media/.
-    This approach requires NO extra packages — just the built-in zipfile module.
+    Uses a 4-tier fallback extraction strategy:
+      1. OpenXML Zip extraction (inspects xl/media/ in standard .xlsx archives).
+      2. openpyxl worksheet image inspection (ws._images).
+      3. HTML / MHTML table image extraction (for portals that export HTML disguised as .xls).
+      4. Binary stream carving (recovers embedded PNG/JPEG/BMP headers from legacy formats).
     """
     import zipfile
+    import base64
+    import re
     
     extracted = []
     os.makedirs(output_dir, exist_ok=True)
     
+    # ── Strategy 1: OpenXML Zip extraction (Standard .xlsx) ────────────
     try:
-        with zipfile.ZipFile(xlsx_path, 'r') as zf:
-            media_files = [
-                f for f in zf.namelist()
-                if f.startswith('xl/media/') and not f.endswith('/')
-            ]
-            
-            if not media_files:
-                logger.warning(f"No images found in xl/media/ of {xlsx_path}")
-                return []
-            
-            logger.info(f"Found {len(media_files)} embedded images in Excel response form")
-            
-            for media_file in media_files:
-                # Extract just the filename (e.g., "image1.png")
-                filename = os.path.basename(media_file)
-                save_path = os.path.join(output_dir, filename)
+        if zipfile.is_zipfile(xlsx_path):
+            with zipfile.ZipFile(xlsx_path, 'r') as zf:
+                media_files = [
+                    f for f in zf.namelist()
+                    if f.startswith('xl/media/') and not f.endswith('/')
+                ]
                 
-                # Avoid overwriting
-                base, ext = os.path.splitext(save_path)
-                counter = 1
-                while os.path.exists(save_path):
-                    save_path = f"{base}_{counter}{ext}"
-                    counter += 1
-                
-                # Read from zip and write to disk
-                with zf.open(media_file) as src, open(save_path, 'wb') as dst:
-                    dst.write(src.read())
-                
-                file_size = os.path.getsize(save_path)
-                logger.info(f"  Extracted from Excel: {filename} ({file_size:,} bytes)")
-                extracted.append(save_path)
-    except zipfile.BadZipFile:
-        logger.error(f"Downloaded file is not a valid Excel/ZIP file: {xlsx_path}")
+                if media_files:
+                    logger.info(f"Found {len(media_files)} embedded images in Excel OpenXML media")
+                    for media_file in media_files:
+                        filename = os.path.basename(media_file)
+                        save_path = os.path.join(output_dir, filename)
+                        
+                        base, ext = os.path.splitext(save_path)
+                        counter = 1
+                        while os.path.exists(save_path):
+                            save_path = f"{base}_{counter}{ext}"
+                            counter += 1
+                        
+                        with zf.open(media_file) as src, open(save_path, 'wb') as dst:
+                            dst.write(src.read())
+                        
+                        file_size = os.path.getsize(save_path)
+                        logger.info(f"  Extracted image from Excel: {os.path.basename(save_path)} ({file_size:,} bytes)")
+                        extracted.append(save_path)
+                    
+                    if extracted:
+                        return extracted
     except Exception as e:
-        logger.error(f"Error extracting images from Excel: {e}")
+        logger.debug(f"Zip extraction attempt finished with: {e}")
+
+    # ── Strategy 2: openpyxl worksheet image inspection ───────────────
+    try:
+        from openpyxl import load_workbook
+        wb = load_workbook(xlsx_path, data_only=True)
+        ws = wb.active
+        images = getattr(ws, "_images", [])
+        if images:
+            logger.info(f"Found {len(images)} openpyxl image objects in worksheet")
+            for idx, img in enumerate(images):
+                img_ext = getattr(img, "format", "png") or "png"
+                if not img_ext.startswith("."):
+                    img_ext = f".{img_ext}"
+                save_path = os.path.join(output_dir, f"openpyxl_img_{idx + 1}{img_ext}")
+                
+                # Get raw bytes from openpyxl image
+                img_data = None
+                if hasattr(img, "_data") and callable(img._data):
+                    img_data = img._data()
+                elif hasattr(img, "ref"):
+                    img_data = img.ref.read() if hasattr(img.ref, "read") else None
+                
+                if img_data:
+                    with open(save_path, "wb") as f:
+                        f.write(img_data)
+                    logger.info(f"  Extracted openpyxl image: {os.path.basename(save_path)}")
+                    extracted.append(save_path)
+            if extracted:
+                return extracted
+    except Exception as e:
+        logger.debug(f"openpyxl image extraction attempt finished with: {e}")
+
+    # ── Strategy 3: HTML / XML Spreadsheet data URL parsing ───────────
+    try:
+        with open(xlsx_path, "rb") as f:
+            raw_bytes = f.read()
+        
+        # Check if file is HTML or XML disguised as Excel
+        if b"<html" in raw_bytes[:1000].lower() or b"<?xml" in raw_bytes[:1000].lower() or b"<table" in raw_bytes[:1000].lower():
+            logger.info("Excel file detected as HTML/XML format — scanning for inline images...")
+            raw_str = raw_bytes.decode("utf-8", errors="ignore")
+            
+            # Find base64 image data URIs
+            data_uri_pattern = r'data:image/(png|jpeg|jpg|gif|webp|bmp);base64,([A-Za-z0-9+/=]+)'
+            matches = re.findall(data_uri_pattern, raw_str)
+            for idx, (img_type, b64_str) in enumerate(matches):
+                try:
+                    img_bytes = base64.b64decode(b64_str)
+                    save_path = os.path.join(output_dir, f"html_img_{idx + 1}.{img_type}")
+                    with open(save_path, "wb") as f:
+                        f.write(img_bytes)
+                    logger.info(f"  Extracted inline base64 image: {os.path.basename(save_path)}")
+                    extracted.append(save_path)
+                except Exception:
+                    continue
+            if extracted:
+                return extracted
+    except Exception as e:
+        logger.debug(f"HTML image extraction attempt finished with: {e}")
+
+    # ── Strategy 4: Binary Stream Carving (PNG / JPEG / BMP) ───────────
+    try:
+        with open(xlsx_path, "rb") as f:
+            content = f.read()
+        
+        # Look for PNG signature (\x89PNG\r\n\x1a\n) and IEND
+        png_sig = b"\x89PNG\r\n\x1a\n"
+        png_end = b"IEND\xaeB`\x82"
+        pos = 0
+        png_idx = 1
+        while True:
+            start = content.find(png_sig, pos)
+            if start == -1:
+                break
+            end = content.find(png_end, start)
+            if end != -1:
+                end += len(png_end)
+                png_bytes = content[start:end]
+                if len(png_bytes) > 500:  # Ignore tiny icon fragments
+                    save_path = os.path.join(output_dir, f"carved_img_{png_idx}.png")
+                    with open(save_path, "wb") as f:
+                        f.write(png_bytes)
+                    extracted.append(save_path)
+                    png_idx += 1
+                pos = end
+            else:
+                pos = start + len(png_sig)
+
+        # Look for JPEG signature (\xFF\xD8\xFF) and EOI (\xFF\xD9)
+        jpg_sig = b"\xff\xd8\xff"
+        jpg_end = b"\xff\xd9"
+        pos = 0
+        jpg_idx = 1
+        while True:
+            start = content.find(jpg_sig, pos)
+            if start == -1:
+                break
+            end = content.find(jpg_end, start + 3)
+            if end != -1:
+                end += 2
+                jpg_bytes = content[start:end]
+                if len(jpg_bytes) > 1000:
+                    save_path = os.path.join(output_dir, f"carved_img_{jpg_idx}.jpg")
+                    with open(save_path, "wb") as f:
+                        f.write(jpg_bytes)
+                    extracted.append(save_path)
+                    jpg_idx += 1
+                pos = end
+            else:
+                pos = start + 3
+                
+        if extracted:
+            logger.info(f"Carved {len(extracted)} image streams from Excel binary")
+    except Exception as e:
+        logger.debug(f"Binary carving finished with: {e}")
     
     return extracted
 

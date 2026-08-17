@@ -298,6 +298,7 @@ def run_pipeline(
                     base_save_dir=ftir_records_dir,
                 )
                 extraction_source = extract_result.get("extraction_source", "Unknown")
+                ftir_meta = extract_result.get("ftir_metadata", {})
                 if extract_result.get("skipped"):
                     logger.debug(f"{row_label}: Attachments already downloaded (resumability skip)")
                     extraction_source = "Local Cache"
@@ -316,6 +317,40 @@ def run_pipeline(
                     pipeline_status = "FAILED_HYPERLINK_DOWNLOAD"
                     failure_stage = "Stage 1a (Hyperlink Attachment Download)"
                     failure_diagnostics = f"Hyperlink attachment extraction error: {err_str}"
+                ftir_meta = {}
+        else:
+            ftir_meta = {}
+
+        # ── Enrich row with metadata from Response Form Excel if available ───
+        response_form_path = os.path.join(ftir_folder, f"{ftir_no}_response_form.xlsx")
+        if not ftir_meta and os.path.isfile(response_form_path):
+            try:
+                from src.browser_extract import extract_metadata_from_xlsx
+                ftir_meta = extract_metadata_from_xlsx(response_form_path)
+            except Exception:
+                ftir_meta = {}
+
+        if ftir_meta:
+            row_dict = row.to_dict() if hasattr(row, "to_dict") else dict(row)
+            if ftir_meta.get("subject"):
+                if "Subject (English)" not in row_dict or pd.isna(row_dict.get("Subject (English)")) or not str(row_dict.get("Subject (English)")).strip():
+                    row_dict["Subject (English)"] = ftir_meta["subject"]
+                if "Subject" not in row_dict or pd.isna(row_dict.get("Subject")):
+                    row_dict["Subject"] = ftir_meta["subject"]
+            if ftir_meta.get("customer_complaint"):
+                if "Customer Complaint" not in row_dict or pd.isna(row_dict.get("Customer Complaint")) or not str(row_dict.get("Customer Complaint")).strip():
+                    row_dict["Customer Complaint"] = ftir_meta["customer_complaint"]
+            if ftir_meta.get("mileage"):
+                if "Mileage - Using Time" not in row_dict or pd.isna(row_dict.get("Mileage - Using Time")) or not str(row_dict.get("Mileage - Using Time")).strip():
+                    row_dict["Mileage - Using Time"] = ftir_meta["mileage"]
+            if ftir_meta.get("incident_condition"):
+                row_dict["Incident Condition"] = ftir_meta["incident_condition"]
+            if ftir_meta.get("checked_results"):
+                row_dict["Checked Results"] = ftir_meta["checked_results"]
+            if ftir_meta.get("casual_parts_name"):
+                row_dict["Casual Parts Name"] = ftir_meta["casual_parts_name"]
+            row = pd.Series(row_dict)
+            logger.debug(f"{row_label}: Enriched tabular row with Response Form metadata")
 
         # ── 4b. Media normalisation & picture extraction ───────────────
         image_paths = []
