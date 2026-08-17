@@ -30,7 +30,17 @@ except ImportError:
     OPENCV_AVAILABLE = False
     logger.warning("OpenCV not available. Video frame extraction will be disabled.")
 
-import pymupdf  # PyMuPDF
+try:
+    import pymupdf
+    PYMUPDF_AVAILABLE = True
+except ImportError:
+    try:
+        import fitz as pymupdf
+        PYMUPDF_AVAILABLE = True
+    except ImportError:
+        PYMUPDF_AVAILABLE = False
+        pymupdf = None
+        logger.warning("PyMuPDF (pymupdf / fitz) not available. PDF image extraction will be disabled.")
 
 # Cross-platform safe default directory for extracted frames
 _DEFAULT_TMP_DIR = "/tmp/ftir_frames" if os.name == "posix" else os.path.join(tempfile.gettempdir(), "ftir_frames")
@@ -56,7 +66,7 @@ def _get_output_dir_for_file(filepath: str, base_tmp_dir: str = _DEFAULT_TMP_DIR
     return out_dir
 
 
-def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0) -> List[str]:
+def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0, driver=None) -> List[str]:
     """
     Convert a single attachment file into a flat list of still image paths.
 
@@ -149,6 +159,10 @@ def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0) -
 
     # 3. PDF Documents (PyMuPDF Embedded Image Extraction)
     if ext in PDF_EXTENSIONS:
+        if not PYMUPDF_AVAILABLE:
+            logger.error(f"Cannot extract images from {abs_path}: PyMuPDF is not installed.")
+            return []
+
         out_dir = _get_output_dir_for_file(abs_path)
         existing_files = [os.path.join(out_dir, f) for f in os.listdir(out_dir) if os.path.isfile(os.path.join(out_dir, f))]
         if existing_files:
@@ -209,7 +223,7 @@ def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0) -
         logger.info(f"Extracting images from Excel '{os.path.basename(abs_path)}' to {out_dir}")
         try:
             from src.browser_extract import _extract_images_from_xlsx
-            extracted_images = _extract_images_from_xlsx(abs_path, out_dir)
+            extracted_images = _extract_images_from_xlsx(abs_path, out_dir, driver=driver)
             logger.info(f"  -> Extracted {len(extracted_images)} image(s) from Excel.")
             return extracted_images
         except Exception as e:
@@ -221,7 +235,7 @@ def extract_images_from_attachment(path: str, frame_interval_sec: float = 2.0) -
     return []
 
 
-def get_all_images_for_ftir(ftir_folder: str) -> List[str]:
+def get_all_images_for_ftir(ftir_folder: str, driver=None) -> List[str]:
     """
     Scan an FTIR record folder and normalize all attachments into a flat list of still image paths.
     
@@ -254,7 +268,7 @@ def get_all_images_for_ftir(ftir_folder: str) -> List[str]:
             
         fpath = os.path.join(ftir_folder, fname)
         if os.path.isfile(fpath):
-            img_paths = extract_images_from_attachment(fpath)
+            img_paths = extract_images_from_attachment(fpath, driver=driver)
             combined_images.extend(img_paths)
             
     logger.info(f"FTIR folder '{os.path.basename(ftir_folder)}' yielded {len(combined_images)} total normalized images.")

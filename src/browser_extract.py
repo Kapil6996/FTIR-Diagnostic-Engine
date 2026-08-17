@@ -492,6 +492,103 @@ def _download_via_browser_fetch(driver: webdriver.Edge, url: str) -> Optional[by
     return None
 
 
+def _extract_session_token(driver: webdriver.Edge) -> str:
+    """
+    Extract the dynamic CSRF/session query parameter from the live SIFT page.
+
+    SIFT URLs contain a dynamic session token as the first query parameter,
+    e.g., ?1a00f7bfc91=&documentId=...  This token is required for authenticated
+    file downloads.  We extract it by scanning existing links on the page.
+    """
+    js = """
+    function extractToken(doc) {
+        // Scan <a>, <img>, <form> for URLs containing ftirWeb or SYQAA
+        var selectors = 'a[href*="ftirWeb"], a[onclick*="ftirWeb"], img[src*="ftirWeb"]';
+        var elems = doc.querySelectorAll(selectors);
+        for (var i = 0; i < elems.length; i++) {
+            var url = elems[i].href || elems[i].src || '';
+            if (!url) {
+                var oc = elems[i].getAttribute('onclick') || '';
+                var m = oc.match(/['"]([^'"]*ftirWeb[^'"]*)['"]/);
+                if (m) url = m[1];
+            }
+            if (url && url.indexOf('?') !== -1) {
+                var params = url.substring(url.indexOf('?') + 1).split('&');
+                for (var j = 0; j < params.length; j++) {
+                    var key = params[j].split('=')[0];
+                    if (key && key !== 'documentId' && key !== 'fileCategory'
+                        && key !== 'fileSequence' && key !== 'timeZoneOffset'
+                        && key.length > 5) {
+                        return key + '=';
+                    }
+                }
+            }
+        }
+        // Also check form actions for hex-like session tokens
+        var forms = doc.querySelectorAll('form');
+        for (var f = 0; f < forms.length; f++) {
+            var action = forms[f].action || '';
+            if (action && action.indexOf('?') !== -1) {
+                var params = action.substring(action.indexOf('?') + 1).split('&');
+                for (var j = 0; j < params.length; j++) {
+                    var key = params[j].split('=')[0];
+                    if (key && key.length > 5 && /^[a-f0-9]+$/.test(key)) {
+                        return key + '=';
+                    }
+                }
+            }
+        }
+        return '';
+    }
+    return extractToken(document);
+    """
+    token = ""
+    try:
+        driver.switch_to.default_content()
+        token = driver.execute_script(js) or ""
+
+        # If not found in main doc, scan frames
+        if not token:
+            frames = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
+            for idx in range(len(frames)):
+                try:
+                    driver.switch_to.default_content()
+                    curr_frames = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
+                    if idx >= len(curr_frames):
+                        continue
+                    driver.switch_to.frame(curr_frames[idx])
+                    token = driver.execute_script(js) or ""
+                    if token:
+                        break
+                except Exception:
+                    continue
+    except Exception as e:
+        logger.debug(f"Session token extraction error: {e}")
+    finally:
+        try:
+            driver.switch_to.default_content()
+        except Exception:
+            pass
+
+    if token:
+        logger.info(f"\u2713 Extracted SIFT session token: {token[:20]}...")
+    else:
+        logger.debug("No dynamic session token found on page (may not be needed)")
+    return token
+
+
+def _build_sift_file_url(base_sift: str, doc_id: str, seq: str, cat: str, session_token: str = "") -> str:
+    """Build a ftirWebFile.do URL with optional session token."""
+    token_part = f"{session_token}&" if session_token else ""
+    return f"{base_sift}/ftirWebFile.do?{token_part}documentId={doc_id}&fileSequence={seq}&fileCategory={cat}&timeZoneOffset=-330"
+
+
+def _build_sift_thumb_url(base_sift: str, doc_id: str, seq: str, cat: str, session_token: str = "") -> str:
+    """Build a ftirWebThumbnail.do URL with optional session token."""
+    token_part = f"{session_token}&" if session_token else ""
+    return f"{base_sift}/ftirWebThumbnail.do?{token_part}documentId={doc_id}&fileSequence={seq}&fileCategory={cat}&timeZoneOffset=-330"
+
+
 def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> Dict[str, Any]:
     """
     Navigate to an FTIR detail page and extract subject text, rich metadata,
@@ -556,14 +653,17 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
         idx = base_url.lower().find("/sift")
         base_sift = base_url[:idx] + "/sift"
 
+    # Extract dynamic session token for authenticated downloads
+    session_token = _extract_session_token(driver)
+
     for ent in entities:
         doc_id = ent["doc_id"]
         seq = ent["file_sequence"]
         cat = ent["file_category"]
         fname = ent["filename"]
         
-        full_url = f"{base_sift}/ftirWebFile.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}&timeZoneOffset=-330"
-        thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}&timeZoneOffset=-330"
+        full_url = _build_sift_file_url(base_sift, doc_id, seq, cat, session_token)
+        thumb_url = _build_sift_thumb_url(base_sift, doc_id, seq, cat, session_token)
 
         if not fname:
             fname = f"{doc_id}_{cat}_{seq}.jpg"
@@ -619,8 +719,8 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
         logger.info(f"Generating predictable SIFT attachment URLs for {ftir_no}...")
         for category in range(1, 4):
             for sequence in range(1, 6):
-                full_url = f"{base_sift}/ftirWebFile.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}&timeZoneOffset=-330"
-                thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}&timeZoneOffset=-330"
+                full_url = _build_sift_file_url(base_sift, ftir_no, str(sequence), str(category), session_token)
+                thumb_url = _build_sift_thumb_url(base_sift, ftir_no, str(sequence), str(category), session_token)
                 if full_url not in seen_urls:
                     seen_urls.add(full_url)
                     attachment_urls.append(full_url)
@@ -1031,15 +1131,26 @@ def _wait_for_download(download_dirs: Union[str, List[str]], timeout: int = 120)
     return None
 
 
-def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
+def _extract_images_from_xlsx(xlsx_path: str, output_dir: str, driver=None) -> List[str]:
     """
     Extract embedded images from an Excel (.xlsx, .xlsm, or .xls) file.
     
-    Uses a 4-tier fallback extraction strategy:
+    Uses a 6-tier fallback extraction strategy:
       1. OpenXML Zip extraction (inspects xl/media/ in standard .xlsx archives).
       2. openpyxl worksheet image inspection (ws._images).
-      3. HTML / MHTML table image extraction (for portals that export HTML disguised as .xls).
+      3. HTML / MHTML table inline base64 image extraction.
+      3b. HTML <img src="..."> remote URL download (via browser session or requests).
       4. Binary stream carving (recovers embedded PNG/JPEG/BMP headers from legacy formats).
+      5. OLE compound document image extraction (for legacy .xls BIFF8 formats).
+    
+    Parameters
+    ----------
+    xlsx_path : str
+        Path to the downloaded Excel file.
+    output_dir : str
+        Directory to save extracted images into.
+    driver : webdriver.Edge, optional
+        Active browser driver for authenticated downloads of remote images.
     """
     import zipfile
     import base64
@@ -1137,6 +1248,60 @@ def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
                     continue
             if extracted:
                 return extracted
+
+            # ── Strategy 3b: HTML <img src="..."> remote URL downloads ─────
+            # SIFT often exports HTML tables with <img> tags pointing at
+            # ftirWebThumbnail.do or ftirWebFile.do URLs instead of embedding.
+            img_src_pattern = r'<img[^>]+src=["\']([^"\'>]+)["\']'
+            img_urls = re.findall(img_src_pattern, raw_str, re.IGNORECASE)
+            # Filter to only SIFT-style image URLs
+            sift_img_urls = [
+                u for u in img_urls
+                if ('ftirweb' in u.lower() or 'ftirWeb' in u)
+                and not u.startswith('data:')
+            ]
+            if sift_img_urls:
+                logger.info(f"Found {len(sift_img_urls)} remote <img> URLs in HTML Excel — downloading...")
+                for img_idx, img_url in enumerate(sift_img_urls):
+                    try:
+                        img_bytes = None
+                        # Prefer in-browser fetch for auth
+                        if driver is not None:
+                            img_bytes = _download_via_browser_fetch(driver, img_url)
+                        # Fallback to requests with cookies from driver
+                        if not img_bytes:
+                            try:
+                                cookies = {}
+                                if driver is not None:
+                                    cookies = _get_browser_cookies_for_requests(driver)
+                                sift_domain = img_url.split('/')[2] if '/' in img_url else ''
+                                headers = {
+                                    'Referer': f'https://{sift_domain}/sift/',
+                                    'Origin': f'https://{sift_domain}',
+                                }
+                                resp = requests.get(img_url, cookies=cookies, headers=headers, timeout=30)
+                                ct = resp.headers.get('Content-Type', '').lower()
+                                if resp.status_code == 200 and len(resp.content) > 100 and 'text/html' not in ct:
+                                    img_bytes = resp.content
+                            except Exception as dl_err:
+                                logger.debug(f"requests.get failed for HTML img URL: {dl_err}")
+                        if img_bytes and len(img_bytes) > 100:
+                            # Detect extension from content
+                            ext = '.jpg'
+                            if img_bytes[:4] == b'\x89PNG':
+                                ext = '.png'
+                            elif img_bytes[:2] == b'BM':
+                                ext = '.bmp'
+                            save_path = os.path.join(output_dir, f"html_remote_img_{img_idx + 1}{ext}")
+                            with open(save_path, 'wb') as f:
+                                f.write(img_bytes)
+                            logger.info(f"  Downloaded remote image: {os.path.basename(save_path)} ({len(img_bytes):,} bytes)")
+                            extracted.append(save_path)
+                    except Exception as e:
+                        logger.debug(f"Failed to download HTML img URL {img_url}: {e}")
+                        continue
+                if extracted:
+                    return extracted
     except Exception as e:
         logger.debug(f"HTML image extraction attempt finished with: {e}")
 
@@ -1193,8 +1358,52 @@ def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
                 
         if extracted:
             logger.info(f"Carved {len(extracted)} image streams from Excel binary")
+            return extracted
     except Exception as e:
         logger.debug(f"Binary carving finished with: {e}")
+
+    # ── Strategy 5: OLE Compound Document Extraction (.xls BIFF8) ──────
+    try:
+        import olefile
+        if olefile.isOleFile(xlsx_path):
+            logger.info("Excel file detected as OLE compound document — scanning for embedded images...")
+            ole = olefile.OleFileIO(xlsx_path)
+            for stream_path in ole.listdir():
+                stream_name = '/'.join(stream_path).lower()
+                # OLE streams containing images often live under Pictures, Images, or MBD*
+                if any(kw in stream_name for kw in ['picture', 'image', 'mbd', 'data', 'object']):
+                    try:
+                        data = ole.openstream(stream_path).read()
+                        # Check if stream contains a recognizable image
+                        if data[:4] == b'\x89PNG' or data[:2] == b'\xff\xd8' or data[:2] == b'BM':
+                            ext = '.png' if data[:4] == b'\x89PNG' else '.jpg' if data[:2] == b'\xff\xd8' else '.bmp'
+                            save_path = os.path.join(output_dir, f"ole_img_{len(extracted) + 1}{ext}")
+                            with open(save_path, 'wb') as f:
+                                f.write(data)
+                            logger.info(f"  Extracted OLE image: {os.path.basename(save_path)} ({len(data):,} bytes)")
+                            extracted.append(save_path)
+                        # Sometimes images are embedded with an 8-byte OLE header before the actual image
+                        elif len(data) > 8:
+                            for sig, sig_ext in [(b'\x89PNG', '.png'), (b'\xff\xd8\xff', '.jpg')]:
+                                offset = data.find(sig)
+                                if offset != -1 and offset < 512:
+                                    img_data = data[offset:]
+                                    if len(img_data) > 500:
+                                        save_path = os.path.join(output_dir, f"ole_img_{len(extracted) + 1}{sig_ext}")
+                                        with open(save_path, 'wb') as f:
+                                            f.write(img_data)
+                                        extracted.append(save_path)
+                                        break
+                    except Exception:
+                        continue
+            ole.close()
+            if extracted:
+                logger.info(f"Extracted {len(extracted)} images from OLE compound document")
+                return extracted
+    except ImportError:
+        logger.debug("olefile not installed — skipping OLE compound document strategy")
+    except Exception as e:
+        logger.debug(f"OLE extraction attempt finished with: {e}")
     
     return extracted
 def _is_on_ftir_detail_page(driver: webdriver.Edge, switch_if_found: bool = True) -> bool:
@@ -1293,15 +1502,26 @@ def extract_via_response_form(
                 return []
             on_detail = True
 
-    # Configure Edge to download to our known directory (via CDP command on active window)
+    # Configure Edge to download to our known directory
+    # Use Browser.setDownloadBehavior (not Page.) so it applies across ALL
+    # popup windows, not just the current page target.
+    abs_download_dir = os.path.abspath(download_dir)
     try:
-        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+        driver.execute_cdp_cmd("Browser.setDownloadBehavior", {
             "behavior": "allow",
-            "downloadPath": os.path.abspath(download_dir),
+            "downloadPath": abs_download_dir,
         })
-        logger.info(f"Download directory set via CDP to: {download_dir}")
-    except Exception as e:
-        logger.debug(f"CDP downloadPath configuration: {e}")
+        logger.info(f"Download directory set via CDP (Browser-level) to: {download_dir}")
+    except Exception:
+        # Fallback to Page-level if Browser-level is unsupported
+        try:
+            driver.execute_cdp_cmd("Page.setDownloadBehavior", {
+                "behavior": "allow",
+                "downloadPath": abs_download_dir,
+            })
+            logger.info(f"Download directory set via CDP (Page-level fallback) to: {download_dir}")
+        except Exception as e:
+            logger.debug(f"CDP downloadPath configuration failed: {e}")
 
     time.sleep(2)
 
@@ -1315,6 +1535,21 @@ def extract_via_response_form(
         "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
         "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'go to ftir')]",
         "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
+        # Additional selectors for export/download/print/excel buttons
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'excel')]",
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'excel')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'export')]",
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'export')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'download')]",
+        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'download')]",
+        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'print')]",
+        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'print')]",
+        # Input buttons matching form action patterns
+        "//input[@type='button' and contains(@onclick, 'SYQAA030')]",
+        "//input[@type='button' and contains(@onclick, 'response')]",
+        "//input[@type='button' and contains(@onclick, 'excel')]",
+        "//input[@type='submit' and contains(@onclick, 'SYQAA030')]",
+        "//a[contains(@onclick, 'SYQAA030')]",
     ]
 
     def _find_button_in_context():
@@ -1347,7 +1582,15 @@ def extract_via_response_form(
                     if (shadowBtn) return shadowBtn;
                 }
                 let text = ((el.innerText || el.value || el.title || el.alt || el.name || '')).toLowerCase();
-                if (text.includes('response form') || text.includes('go to ftir') || text.includes('ftir response')) {
+                if (text.includes('response form') || text.includes('go to ftir') || text.includes('ftir response')
+                    || text.includes('excel') || text.includes('export')) {
+                    if (el.offsetWidth > 0 || el.offsetHeight > 0) {
+                        return el;
+                    }
+                }
+                // Also check onclick handlers for SYQAA030 (response form action)
+                let onclick = (el.getAttribute('onclick') || '').toLowerCase();
+                if (onclick.includes('syqaa030') || onclick.includes('response') || onclick.includes('excel')) {
                     if (el.offsetWidth > 0 || el.offsetHeight > 0) {
                         return el;
                     }
@@ -1408,7 +1651,45 @@ def extract_via_response_form(
     driver.switch_to.default_content()
 
     if not clicked:
-        logger.warning(f"FTIR {ftir_no}: Could not find or click 'FTIR Response Form' button.")
+        # ── Fallback: Try direct form submission via JavaScript ─────────────
+        logger.info(f"FTIR {ftir_no}: Button not found, attempting direct form submission via JS...")
+        try:
+            driver.switch_to.default_content()
+            # Try submitting forms that match known SIFT response form actions
+            form_submit_js = """
+            function trySubmitForm(doc) {
+                var forms = doc.querySelectorAll('form');
+                for (var f = 0; f < forms.length; f++) {
+                    var action = (forms[f].action || '').toLowerCase();
+                    var name = (forms[f].name || '').toLowerCase();
+                    if (action.includes('syqaa030') || action.includes('response')
+                        || name.includes('syqaa030') || name.includes('syqaa090')) {
+                        forms[f].submit();
+                        return true;
+                    }
+                }
+                // Try clicking any submit/button inside SYQAA forms
+                var inputs = doc.querySelectorAll("input[type='submit'], input[type='button'], button[type='submit']");
+                for (var i = 0; i < inputs.length; i++) {
+                    var v = ((inputs[i].value || inputs[i].innerText || '') + ' ' + (inputs[i].getAttribute('onclick') || '')).toLowerCase();
+                    if (v.includes('response') || v.includes('excel') || v.includes('export') || v.includes('syqaa030')) {
+                        inputs[i].click();
+                        return true;
+                    }
+                }
+                return false;
+            }
+            return trySubmitForm(document);
+            """
+            form_submitted = driver.execute_script(form_submit_js)
+            if form_submitted:
+                clicked = True
+                logger.info(f"FTIR {ftir_no}: Direct form submission triggered via JS")
+        except Exception as form_err:
+            logger.debug(f"Form submission fallback failed: {form_err}")
+
+    if not clicked:
+        logger.warning(f"FTIR {ftir_no}: Could not find or click 'FTIR Response Form' button (all strategies exhausted).")
         try:
             screenshot_path = os.path.join(os.getcwd(), f"debug_missing_button_{ftir_no}.png")
             driver.save_screenshot(screenshot_path)
@@ -1427,8 +1708,8 @@ def extract_via_response_form(
 
     logger.info(f"FTIR {ftir_no}: Response Form Excel downloaded: {downloaded_file}")
 
-    # Extract images from the Excel file
-    extracted_images = _extract_images_from_xlsx(downloaded_file, save_dir)
+    # Extract images from the Excel file (pass driver for authenticated remote image downloads)
+    extracted_images = _extract_images_from_xlsx(downloaded_file, save_dir, driver=driver)
 
     # Save a copy of the downloaded Excel into ftir_records/<ftir_no>/
     try:
@@ -1616,10 +1897,18 @@ def download_attachment(
             logger.info(f"Attempting in-session browser fetch for fallback: {fallback_url}")
             raw_content = _download_via_browser_fetch(driver, fallback_url)
 
+    # Derive domain headers for enterprise portal SSO / Referer checks
+    domain = url.split('/')[2] if '/' in url and len(url.split('/')) > 2 else 'sift.bizapps.suzuki'
+    req_headers = {
+        "Referer": f"https://{domain}/sift/",
+        "Origin": f"https://{domain}",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+    }
+
     # ── Attempt 2: Direct HTTP GET on Primary URL ──────────────────────
     if not raw_content:
         try:
-            resp = requests.get(url, cookies=cookies, timeout=timeout)
+            resp = requests.get(url, cookies=cookies, headers=req_headers, timeout=timeout)
             ct = resp.headers.get("Content-Type", "").lower()
             if resp.status_code == 200 and len(resp.content) > 100 and "text/html" not in ct:
                 raw_content = resp.content
@@ -1631,7 +1920,7 @@ def download_attachment(
     # ── Attempt 3: Fallback URL HTTP GET (e.g. Thumbnail) ──────────────
     if not raw_content and fallback_url:
         try:
-            resp_fb = requests.get(fallback_url, cookies=cookies, timeout=timeout)
+            resp_fb = requests.get(fallback_url, cookies=cookies, headers=req_headers, timeout=timeout)
             ct_fb = resp_fb.headers.get("Content-Type", "").lower()
             if resp_fb.status_code == 200 and len(resp_fb.content) > 100 and "text/html" not in ct_fb:
                 raw_content = resp_fb.content
