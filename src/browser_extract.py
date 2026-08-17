@@ -262,376 +262,380 @@ def _looks_like_attachment_url(href: str) -> bool:
     return False
 
 
+def _extract_sift_page_entities(driver: webdriver.Edge) -> List[Dict[str, Any]]:
+    """
+    Extract exact attachment records from SIFT's syqaa090FindWebAttachmentEntity hidden fields
+    and comOnFtirAttachmentFileLinkClicked / ftirWebThumbnail elements across all frames.
+    """
+    js_extract_entities = """
+    var results = [];
+    var seenKeys = {};
+
+    function scanDocument(doc, win) {
+        if (!doc) return;
+        
+        // 1. Scan hidden inputs for syqaa090FindWebAttachmentEntity
+        var inputs = doc.querySelectorAll("input[name*='syqaa090FindWebAttachmentEntity']");
+        var entities = {};
+        for (var i = 0; i < inputs.length; i++) {
+            var name = inputs[i].name;
+            var val = inputs[i].value;
+            var m = name.match(/syqaa090FindWebAttachmentEntity\s*\[\s*(\d+)\s*\]\.(\w+)/);
+            if (m) {
+                var idx = m[1];
+                var field = m[2];
+                if (!entities[idx]) entities[idx] = {};
+                entities[idx][field] = val;
+            }
+        }
+        for (var k in entities) {
+            var ent = entities[k];
+            var docId = ent.f1Id || "";
+            var seq = ent.f1Seq || "";
+            var cat = ent.f1FileCategory || "1";
+            var fname = ent.f1Name || "";
+            var fsize = ent.f1Size || "";
+            var ftype = ent.f1Type || "";
+            if (docId && seq) {
+                var uniqueKey = docId + "_" + cat + "_" + seq;
+                if (!seenKeys[uniqueKey]) {
+                    seenKeys[uniqueKey] = true;
+                    results.push({
+                        "doc_id": docId,
+                        "file_category": cat,
+                        "file_sequence": seq,
+                        "filename": fname,
+                        "file_size": fsize,
+                        "file_type": ftype,
+                        "source": "hidden_entity"
+                    });
+                }
+            }
+        }
+
+        // 2. Scan a tags with onclick containing comOnFtirAttachmentFileLinkClicked
+        var aTags = doc.querySelectorAll("a[onclick*='comOnFtirAttachmentFileLinkClicked']");
+        for (var a = 0; a < aTags.length; a++) {
+            var oc = aTags[a].getAttribute("onclick") || "";
+            var am = oc.match(/comOnFtirAttachmentFileLinkClicked\s*\(\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]\s*,\s*['"]([^'"]+)['"]/);
+            if (am) {
+                var docId = am[1];
+                var cat = am[2];
+                var seq = am[3];
+                var fname = aTags[a].innerText.trim();
+                var uniqueKey = docId + "_" + cat + "_" + seq;
+                if (!seenKeys[uniqueKey]) {
+                    seenKeys[uniqueKey] = true;
+                    results.push({
+                        "doc_id": docId,
+                        "file_category": cat,
+                        "file_sequence": seq,
+                        "filename": fname,
+                        "file_size": "",
+                        "file_type": "",
+                        "source": "onclick_handler"
+                    });
+                }
+            }
+        }
+
+        // 3. Scan img tags with ftirWebThumbnail or ftirWeb
+        var imgTags = doc.querySelectorAll("img[src*='ftirWeb']");
+        for (var im = 0; im < imgTags.length; im++) {
+            var src = imgTags[im].src || "";
+            var docIdM = src.match(/[?&]documentId=([^&]+)/i);
+            var seqM = src.match(/[?&]fileSequence=([^&]+)/i);
+            var catM = src.match(/[?&]fileCategory=([^&]+)/i);
+            if (docIdM && seqM) {
+                var docId = docIdM[1];
+                var seq = seqM[1];
+                var cat = catM ? catM[1] : "1";
+                var uniqueKey = docId + "_" + cat + "_" + seq;
+                if (!seenKeys[uniqueKey]) {
+                    seenKeys[uniqueKey] = true;
+                    results.push({
+                        "doc_id": docId,
+                        "file_category": cat,
+                        "file_sequence": seq,
+                        "filename": "",
+                        "file_size": "",
+                        "file_type": "",
+                        "source": "img_src"
+                    });
+                }
+            }
+        }
+    }
+
+    try {
+        scanDocument(document, window);
+    } catch(e) {}
+    return results;
+    """
+    all_entities = []
+    seen = set()
+
+    def _collect_from_context():
+        try:
+            res = driver.execute_script(js_extract_entities)
+            if res and isinstance(res, list):
+                for item in res:
+                    key = (item.get("doc_id"), item.get("file_category"), item.get("file_sequence"))
+                    if key not in seen:
+                        seen.add(key)
+                        all_entities.append(item)
+        except Exception:
+            pass
+
+    # Collect from main context
+    driver.switch_to.default_content()
+    _collect_from_context()
+
+    # Collect from all frames / iframes
+    try:
+        frames = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
+        for idx in range(len(frames)):
+            try:
+                curr_frames = driver.find_elements(By.TAG_NAME, "iframe") + driver.find_elements(By.TAG_NAME, "frame")
+                if idx >= len(curr_frames):
+                    continue
+                driver.switch_to.frame(curr_frames[idx])
+                _collect_from_context()
+                driver.switch_to.parent_frame()
+            except Exception:
+                try:
+                    driver.switch_to.default_content()
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    finally:
+        driver.switch_to.default_content()
+
+    return all_entities
+
+
+def _extract_sift_page_metadata(driver: webdriver.Edge) -> Dict[str, Any]:
+    """
+    Extract structured metadata directly from the live SIFT detail page DOM.
+    """
+    js_extract_meta = """
+    function getVal(name) {
+        var el = document.querySelector("[name='" + name + "']");
+        if (el) return (el.value || el.innerText || "").trim();
+        return "";
+    }
+    return {
+        "subject": getVal("syqaa090FindTFtirViewEntity.g1SubjectEn") || getVal("syqaa090FindTFtirViewEntity.f1FaultSubject"),
+        "customer_complaint": getVal("syqaa090FindTFtirViewEntity.f1FaultProposal"),
+        "incident_condition": getVal("syqaa090FindTFtirViewEntity.f1FaultBecame"),
+        "checked_contents": getVal("syqaa090FindTFtirViewEntity.f1FaultCheck"),
+        "checked_results": getVal("syqaa090FindTFtirViewEntity.f1FaultResult"),
+        "casual_parts_number": getVal("syqaa090FindTFtirViewEntity.g1CausalPartsNo"),
+        "casual_parts_name": getVal("syqaa090FindTFtirViewEntity.g1CausalPartsNameEn"),
+        "product_model_code": getVal("syqaa090FindTFtirViewEntity.g1ProductModelCode"),
+        "sales_model_code": getVal("syqaa090FindTFtirViewEntity.g1SalesModelCode"),
+        "vin": getVal("syqaa090FindTFtirViewEntity.f1Vin"),
+        "mileage": getVal("syqaa090FindTFtirViewEntity.f1MileageTimeView"),
+        "diagnosis_code": getVal("syqaa090FindTFtirViewEntity.f1FaultDtc"),
+        "date_reported": getVal("syqaa090FindTFtirViewEntity.f1ReportDate"),
+        "date_of_incident": getVal("syqaa090FindTFtirViewEntity.f1FailureDate")
+    };
+    """
+    metadata = {}
+    try:
+        driver.switch_to.default_content()
+        meta = driver.execute_script(js_extract_meta)
+        if meta and isinstance(meta, dict):
+            metadata = {k: v for k, v in meta.items() if v}
+    except Exception as e:
+        logger.debug(f"DOM metadata extraction error: {e}")
+    finally:
+        driver.switch_to.default_content()
+    return metadata
+
+
+def _download_via_browser_fetch(driver: webdriver.Edge, url: str) -> Optional[bytes]:
+    """
+    Download binary resource directly inside the active browser session via fetch()
+    and FileReader, perfectly preserving all session cookies, SSO auth, and TLS state.
+    """
+    import base64
+    js = """
+    var uri = arguments[0];
+    var callback = arguments[1];
+    fetch(uri, { credentials: 'include' })
+        .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.blob();
+        })
+        .then(function(blob) {
+            var reader = new FileReader();
+            reader.onloadend = function() {
+                callback(reader.result);
+            };
+            reader.readAsDataURL(blob);
+        })
+        .catch(function(err) {
+            callback(null);
+        });
+    """
+    try:
+        data_url = driver.execute_async_script(js, url)
+        if data_url and isinstance(data_url, str) and "," in data_url:
+            b64_content = data_url.split(",", 1)[1]
+            raw_bytes = base64.b64decode(b64_content)
+            if len(raw_bytes) > 100:
+                return raw_bytes
+    except Exception as e:
+        logger.debug(f"Browser in-session fetch failed for {url}: {e}")
+    return None
+
+
 def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> Dict[str, Any]:
     """
-    Navigate to an FTIR detail page and extract subject text and
-    attachment URLs.
-
-    Parameters
-    ----------
-    driver : webdriver.Edge
-        An active Selenium WebDriver with a logged-in session.
-    url : str
-        Full URL of the FTIR detail page.
-
-    Returns
-    -------
-    dict
-        ``{
-            "page_url": str,
-            "subject_text": str or None,
-            "attachment_urls": List[str],
-            "page_title": str,
-        }``
+    Navigate to an FTIR detail page and extract subject text, rich metadata,
+    and all attachment records directly from the live DOM entities.
     """
-    logger.info(f"Navigating to FTIR page: {url}")
-    driver.get(url)
+    if url and url.startswith("http"):
+        try:
+            cur_url = driver.current_url.lower()
+            if "syqaa090" not in cur_url and "syqaa710" in cur_url:
+                logger.info(f"Navigating to FTIR page: {url}")
+                driver.get(url)
+        except Exception as e:
+            logger.warning(f"Navigation issue: {e}")
 
     try:
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.TAG_NAME, "body"))
         )
     except TimeoutException:
-        logger.warning(f"Initial page load timed out for {url}")
+        pass
 
-    # Detect if we landed on a login page — use exact SSO element IDs from
-    # the live SIFT portal: #username, #password, #cal-login-button
-    current_url = driver.current_url.lower()
-    has_login_url = "login" in current_url or "sso" in current_url or "auth" in current_url
-    has_sso_fields = (
-        len(driver.find_elements(By.ID, "username")) > 0
-        or len(driver.find_elements(By.ID, "password")) > 0
-        or len(driver.find_elements(By.ID, "cal-login-button")) > 0
-        or len(driver.find_elements(By.CSS_SELECTOR, "input[type='password']")) > 0
-    )
-    if has_login_url or has_sso_fields:
-        logger.info(f"⚠️ SSO Login screen detected (URL: {current_url[:60]}...).")
-        logger.info(f"Please log in manually. Waiting up to {_PAGE_TIMEOUT} seconds...")
-        try:
-            # Wait until: URL changes away from login AND no SSO form elements remain
-            WebDriverWait(driver, _PAGE_TIMEOUT).until(
-                lambda d: (
-                    "login" not in d.current_url.lower()
-                    and len(d.find_elements(By.ID, "cal-login-button")) == 0
-                    and len(d.find_elements(By.CSS_SELECTOR, "input[type='password']")) == 0
-                )
-            )
-            logger.info("✓ Login appears successful! Re-navigating to the target FTIR page...")
-            driver.get(url)
-            time.sleep(2)
-        except TimeoutException:
-            logger.error("Login timed out. Proceeding anyway, but extraction will likely fail.")
-            
-    # Allow dynamic content to settle
-    time.sleep(2)
-
-    # FIX: Scroll the ENTIRE page (including all frames and inner divs) to force lazy-loaded content
-    def _force_scroll_all(d):
-        js_scroll_down = """
-        window.scrollTo(0, document.body.scrollHeight);
-        var elements = document.querySelectorAll('*');
-        for (var i = 0; i < elements.length; i++) {
-            if (elements[i].scrollHeight > elements[i].clientHeight) {
-                elements[i].scrollTop = elements[i].scrollHeight;
-            }
-        }
-        """
-        js_scroll_up = """
-        window.scrollTo(0, 0);
-        var elements = document.querySelectorAll('*');
-        for (var i = 0; i < elements.length; i++) {
-            if (elements[i].scrollHeight > elements[i].clientHeight) {
-                elements[i].scrollTop = 0;
-            }
-        }
-        """
-        def scroll_context(js_script):
-            try:
-                d.execute_script(js_script)
-            except Exception:
-                pass
-            try:
-                frames = d.find_elements(By.TAG_NAME, "iframe") + d.find_elements(By.TAG_NAME, "frame")
-                for idx in range(len(frames)):
-                    try:
-                        curr_frames = d.find_elements(By.TAG_NAME, "iframe") + d.find_elements(By.TAG_NAME, "frame")
-                        if idx >= len(curr_frames): continue
-                        d.switch_to.frame(curr_frames[idx])
-                        scroll_context(js_script)
-                        d.switch_to.parent_frame()
-                    except Exception:
-                        try: d.switch_to.default_content()
-                        except: pass
-            except Exception:
-                pass
-
-        # Scroll down everywhere
-        d.switch_to.default_content()
-        scroll_context(js_scroll_down)
-        time.sleep(2)
-        # Scroll up everywhere
-        d.switch_to.default_content()
-        scroll_context(js_scroll_up)
-        d.switch_to.default_content()
-        time.sleep(1)
-
-    logger.info("Scrolling all frames and containers to trigger lazy-loading...")
-    _force_scroll_all(driver)
+    _wait_for_login_if_needed(driver)
 
     page_title = driver.title or ""
     base_url = driver.current_url
 
-    # ------------------------------------------------------------------
-    # 1. Subject text extraction
-    # ------------------------------------------------------------------
-    subject_text = None
+    # 1. Extract rich metadata from live page DOM
+    dom_metadata = _extract_sift_page_metadata(driver)
+    subject_text = dom_metadata.get("subject") or None
 
-    # Try several common patterns for subject / description fields
-    subject_selectors = [
-        # Labelled fields (label + adjacent value)
-        "//td[contains(translate(text(),'SUBJECT','subject'),'subject')]/following-sibling::td",
-        "//th[contains(translate(text(),'SUBJECT','subject'),'subject')]/following-sibling::td",
-        "//label[contains(translate(text(),'SUBJECT','subject'),'subject')]/following-sibling::*",
-        "//span[contains(translate(text(),'SUBJECT','subject'),'subject')]/parent::*/following-sibling::*",
-        # Generic description containers
-        "//div[contains(@class,'subject')]",
-        "//div[contains(@class,'description')]",
-        "//div[contains(@id,'subject')]",
-        "//div[contains(@id,'description')]",
-    ]
-    for xpath in subject_selectors:
-        try:
-            el = driver.find_element(By.XPATH, xpath)
-            txt = (el.text or "").strip()
-            if txt and len(txt) > 3:
-                subject_text = txt
-                break
-        except NoSuchElementException:
-            continue
+    # Fallback subject extraction if DOM query returned none
+    if not subject_text:
+        subject_selectors = [
+            "//td[contains(translate(text(),'SUBJECT','subject'),'subject')]/following-sibling::td",
+            "//th[contains(translate(text(),'SUBJECT','subject'),'subject')]/following-sibling::td",
+            "//label[contains(translate(text(),'SUBJECT','subject'),'subject')]/following-sibling::*",
+            "//span[contains(translate(text(),'SUBJECT','subject'),'subject')]/parent::*/following-sibling::*",
+            "//textarea[contains(@name,'Subject')]",
+            "//textarea[contains(@name,'subject')]",
+        ]
+        for xpath in subject_selectors:
+            try:
+                el = driver.find_element(By.XPATH, xpath)
+                txt = (el.text or el.get_attribute("value") or "").strip()
+                if txt and len(txt) > 3:
+                    subject_text = txt
+                    break
+            except NoSuchElementException:
+                continue
 
-    # ------------------------------------------------------------------
-    # 2. Attachment URL collection — AGGRESSIVE MULTI-STRATEGY SCAN
-    # ------------------------------------------------------------------
+    # 2. Extract exact attachment entities from SIFT hidden inputs and onclick links
+    logger.info("Scanning live SIFT DOM for Syqaa090 WebAttachment entities...")
+    entities = _extract_sift_page_entities(driver)
+
+    attachment_items: List[Dict[str, Any]] = []
     attachment_urls: List[str] = []
-    seen: set = set()
+    seen_urls: set = set()
 
-    # STRATEGY 0 (HIGHEST PRIORITY): Scan ALL links on page for ftirWebFile.do
-    # The user confirmed that clickable photo links (e.g., "cyxs.jpeg") on the
-    # FTIR page point to URLs containing "ftirWebFile.do". This is the most
-    # reliable indicator, so check it FIRST and across the ENTIRE page.
-    logger.info("Strategy 0: Scanning entire page for ftirWebFile/ftirWeb links...")
-    for a_tag in driver.find_elements(By.TAG_NAME, "a"):
-        href = a_tag.get_attribute("href")
-        if href and href not in seen:
-            href_lower = href.lower()
-            if "ftirweb" in href_lower or "ftirfile" in href_lower or "webfile" in href_lower:
-                seen.add(href)
-                attachment_urls.append(href)
-                logger.info(f"  Found ftirWeb link: {href[:80]}...")
-    if attachment_urls:
-        logger.info(f"Strategy 0: Found {len(attachment_urls)} ftirWebFile link(s)!")
+    # Determine base SIFT URL for building file/thumbnail links
+    base_sift = "https://sift.bizapps.suzuki/sift"
+    if "/sift" in base_url.lower():
+        idx = base_url.lower().find("/sift")
+        base_sift = base_url[:idx] + "/sift"
 
-    # STRATEGY 1: Scan ALL links on full page for image-like file names
-    # Look for <a> tags whose visible text or href ends with image extensions
-    logger.info("Strategy 1: Scanning all links for image file names...")
-    for a_tag in driver.find_elements(By.TAG_NAME, "a"):
-        href = a_tag.get_attribute("href")
-        link_text = (a_tag.text or "").strip().lower()
-        if href and href not in seen:
-            # Check if link text looks like a filename (e.g., "cyxs.jpeg")
-            if any(link_text.endswith(ext) for ext in _ATTACHMENT_EXTENSIONS):
-                seen.add(href)
-                attachment_urls.append(href)
-                logger.info(f"  Found image link by name: {link_text} -> {href[:80]}...")
-            elif _looks_like_attachment_url(href):
-                seen.add(href)
-                attachment_urls.append(href)
+    for ent in entities:
+        doc_id = ent["doc_id"]
+        seq = ent["file_sequence"]
+        cat = ent["file_category"]
+        fname = ent["filename"]
+        
+        full_url = f"{base_sift}/ftirWebFile.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}"
+        thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}"
 
-    # STRATEGY 2: Find attachment containers and grab everything inside
-    container_selectors = [
-        "[class*='attachment']", "[class*='Attachment']",
-        "[id*='attachment']", "[id*='Attachment']",
-        "[class*='upload']", "[class*='file-list']",
-        "[class*='gallery']",
-    ]
-    for css in container_selectors:
-        try:
-            containers = driver.find_elements(By.CSS_SELECTOR, css)
-            for container in containers:
-                for a_tag in container.find_elements(By.TAG_NAME, "a"):
-                    href = a_tag.get_attribute("href")
-                    if href and href not in seen:
-                        seen.add(href)
-                        attachment_urls.append(href)
-                for img_tag in container.find_elements(By.TAG_NAME, "img"):
-                    src = img_tag.get_attribute("src")
-                    if src and src not in seen and not src.startswith("data:"):
-                        seen.add(src)
-                        attachment_urls.append(src)
-        except NoSuchElementException:
-            continue
+        if not fname:
+            fname = f"{doc_id}_{cat}_{seq}.jpg"
 
-    # STRATEGY 3: Grab ALL <img> tags on the page (skip tiny icons, EXCEPT ftirWeb links)
-    logger.info("Strategy 3: Scanning all <img> tags on page...")
-    for img_tag in driver.find_elements(By.TAG_NAME, "img"):
-        src = img_tag.get_attribute("src")
-        if src and src not in seen and not src.startswith("data:"):
-            # If it's a known thumbnail endpoint, rewrite it to get the full file!
-            if "ftirwebthumbnail.do" in src.lower():
-                full_src = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', src, flags=re.IGNORECASE)
-                if full_src not in seen:
-                    seen.add(full_src)
-                    attachment_urls.append(full_src)
-                    logger.info(f"  Upgraded thumbnail to full file: {full_src[:80]}...")
-                continue
-            elif "ftirweb" in src.lower() or "ftirfile" in src.lower():
-                seen.add(src)
-                attachment_urls.append(src)
-                continue
+        if full_url not in seen_urls:
+            seen_urls.add(full_url)
+            attachment_urls.append(full_url)
+            attachment_items.append({
+                "url": full_url,
+                "fallback_url": thumb_url,
+                "filename": fname,
+                "doc_id": doc_id,
+                "file_sequence": seq,
+                "file_category": cat,
+                "source": ent.get("source", "sift_entity"),
+            })
+            logger.info(f"  ✓ Found FTIR attachment entity: {fname} (docId={doc_id}, seq={seq})")
 
-            # Skip tiny icons (< 50px) by checking natural dimensions
-            try:
-                w = img_tag.get_attribute("naturalWidth")
-                h = img_tag.get_attribute("naturalHeight")
-                if w and h and int(w) > 50 and int(h) > 50:
-                    seen.add(src)
-                    attachment_urls.append(src)
-            except Exception:
-                seen.add(src)
-                attachment_urls.append(src)
-
-    # Strategy F: Iframe Piercing
-    # Enterprise portals often bury the FTIR details inside a <iframe>.
-    # We must switch into every iframe and scan for attachments!
-    logger.info("Piercing iframes to search for hidden attachments...")
-    iframes = driver.find_elements(By.TAG_NAME, "iframe")
-    for frame in iframes:
-        try:
-            driver.switch_to.frame(frame)
-            for a_tag in driver.find_elements(By.TAG_NAME, "a"):
-                href = a_tag.get_attribute("href")
-                if href and href not in seen and _looks_like_attachment_url(href):
-                    seen.add(href)
+    # 3. Fallback scan for generic <a> / <img> tags if no entities were detected
+    if not attachment_items:
+        logger.info("Scanning for generic image links/thumbnails...")
+        for a_tag in driver.find_elements(By.TAG_NAME, "a"):
+            href = a_tag.get_attribute("href")
+            if href and href not in seen_urls:
+                href_lower = href.lower()
+                if "ftirweb" in href_lower or "webfile" in href_lower:
+                    seen_urls.add(href)
                     attachment_urls.append(href)
-            for img_tag in driver.find_elements(By.TAG_NAME, "img"):
-                src = img_tag.get_attribute("src")
-                if src and src not in seen and not src.startswith("data:"):
-                    if "ftirwebthumbnail.do" in src.lower():
-                        full_src = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', src, flags=re.IGNORECASE)
-                        if full_src not in seen:
-                            seen.add(full_src)
-                            attachment_urls.append(full_src)
-                            logger.info(f"  [Iframe] Upgraded thumbnail to full file: {full_src[:80]}...")
-                        continue
-                    elif "ftirweb" in src.lower() or "ftirfile" in src.lower():
-                        seen.add(src)
-                        attachment_urls.append(src)
-                        continue
-                    seen.add(src)
-                    attachment_urls.append(src)
-        except Exception:
-            pass
-        finally:
-            driver.switch_to.default_content()
+                    attachment_items.append({
+                        "url": href,
+                        "fallback_url": re.sub(r'ftirWebFile\.do', 'ftirWebThumbnail.do', href, flags=re.IGNORECASE),
+                        "filename": (a_tag.text or "").strip() or None,
+                        "source": "generic_link"
+                    })
 
-    # Strategy N: Network Interception (Performance Logs)
-    # The ultimate backup: if the portal uses JS/React/Canvas to render the images,
-    # they won't exist in the DOM as <img> tags. But they MUST be requested over the network!
-    logger.info("Strategy N: Scanning raw network traffic for thumbnail requests...")
-    try:
-        logs = driver.get_log("performance")
-        for entry in logs:
-            import json
-            try:
-                log_data = json.loads(entry.get("message", "{}"))
-                message = log_data.get("message", {})
-                
-                # Check for Network.requestWillBeSent or Network.responseReceived
-                if message.get("method") in ["Network.requestWillBeSent", "Network.responseReceived"]:
-                    url = ""
-                    if "request" in message.get("params", {}):
-                        url = message["params"]["request"].get("url", "")
-                    elif "response" in message.get("params", {}):
-                        url = message["params"]["response"].get("url", "")
-                        
-                    if url and "ftirweb" in url.lower():
-                        if "ftirwebthumbnail.do" in url.lower():
-                            full_url = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', url, flags=re.IGNORECASE)
-                            if full_url not in seen:
-                                seen.add(full_url)
-                                attachment_urls.append(full_url)
-                                logger.info(f"  [Network Log] Upgraded thumbnail request: {full_url[:80]}...")
-                        elif url not in seen:
-                            seen.add(url)
-                            attachment_urls.append(url)
-                            logger.info(f"  [Network Log] Found file request: {url[:80]}...")
-            except Exception:
-                pass
-    except Exception as e:
-        logger.warning(f"Could not read performance logs for network interception: {e}")
+        for img_tag in driver.find_elements(By.TAG_NAME, "img"):
+            src = img_tag.get_attribute("src")
+            if src and src not in seen_urls and not src.startswith("data:"):
+                if "ftirwebthumbnail.do" in src.lower():
+                    full_src = re.sub(r'ftirWebThumbnail\.do', 'ftirWebFile.do', src, flags=re.IGNORECASE)
+                    if full_src not in seen_urls:
+                        seen_urls.add(full_src)
+                        attachment_urls.append(full_src)
+                        attachment_items.append({
+                            "url": full_src,
+                            "fallback_url": src,
+                            "filename": None,
+                            "source": "thumbnail_img"
+                        })
 
-    guessed_urls = []
-    
-    # Strategy E: The Hardcoded Portal Pattern Guesser (The Ultimate Fallback)
-    # If the scraper completely fails to find any images in the DOM, we can blindly 
-    # brute-force the server based on the known portal URL and FTIR number!
-    if ftir_no:
-        if ATTACHMENT_URL_TEMPLATE:
-            logger.info(f"Strategy E: Generating exact URLs using configured template for {ftir_no}")
-            for category in range(1, 4):
-                for sequence in range(1, 11):
-                    hardcoded_url = ATTACHMENT_URL_TEMPLATE.replace("{FTIR_NO}", ftir_no).replace("{CATEGORY}", str(category)).replace("{SEQUENCE}", str(sequence))
-                    if hardcoded_url not in attachment_urls and hardcoded_url not in guessed_urls:
-                        guessed_urls.append(hardcoded_url)
-        elif PORTAL_SEARCH_URL and PORTAL_SEARCH_URL != "INSERT_URL_HERE":
-            if "/sift" in PORTAL_SEARCH_URL.lower():
-                # e.g., https://maruti.com/sift/search.do -> https://maruti.com/sift
-                # But handle case insensitivity
-                idx = PORTAL_SEARCH_URL.lower().find("/sift")
-                base_sift = PORTAL_SEARCH_URL[:idx] + "/sift"
-                logger.info(f"Strategy E: Generating hardcoded URLs for {ftir_no} using base {base_sift}")
-                for category in range(1, 4):
-                    for sequence in range(1, 11):
-                        hardcoded_url = f"{base_sift}/ftirWebFile.do?documentid={ftir_no}&fileCategory={category}&fileSequence={sequence}"
-                        if hardcoded_url not in attachment_urls and hardcoded_url not in guessed_urls:
-                            guessed_urls.append(hardcoded_url)
-
-    # Strategy D: The URL Sequence Guesser
-    # The user noted images follow a strict pattern: ...&fileCategory=1&fileSequence=1&...
-    # If we find EVEN ONE URL matching this, we can mathematically generate the rest!
-    
-    # We will search both the already found attachments and the current page URL for hints
-    search_pool = attachment_urls + [driver.current_url]
-    
-    for url in search_pool:
-        if not url: continue
-        # Look for the parameter pattern in the URL
-        if re.search(r'fileSequence=\d+', url, re.IGNORECASE):
-            logger.info(f"Found predictable URL pattern in: {url[:60]}...")
-            # Generate combinations for fileCategory (1 to 3) and fileSequence (1 to 10)
-            for category in range(1, 4):
-                for sequence in range(1, 11):
-                    # Replace category if it exists
-                    new_url = re.sub(r'(fileCategory=)\d+', rf'\g<1>{category}', url, flags=re.IGNORECASE)
-                    # Replace sequence
-                    new_url = re.sub(r'(fileSequence=)\d+', rf'\g<1>{sequence}', new_url, flags=re.IGNORECASE)
-                    
-                    if new_url not in seen:
-                        seen.add(new_url)
-                        guessed_urls.append(new_url)
-            
-            # Once we've guessed based on a template, break out so we don't duplicate guesses
-            break
-            
-    if guessed_urls:
-        logger.info(f"Generated {len(guessed_urls)} predicted attachment URLs to attempt downloading.")
-        attachment_urls.extend(guessed_urls)
+    # 4. Fallback pattern guesser if still no images found
+    if not attachment_items and ftir_no:
+        logger.info(f"Generating predictable SIFT attachment URLs for {ftir_no}...")
+        for category in range(1, 4):
+            for sequence in range(1, 11):
+                full_url = f"{base_sift}/ftirWebFile.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}"
+                thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}"
+                if full_url not in seen_urls:
+                    seen_urls.add(full_url)
+                    attachment_urls.append(full_url)
+                    attachment_items.append({
+                        "url": full_url,
+                        "fallback_url": thumb_url,
+                        "filename": f"{ftir_no}_cat{category}_seq{sequence}.jpg",
+                        "source": "predicted_pattern"
+                    })
 
     # Resolve relative URLs to absolute
     attachment_urls = [urljoin(base_url, u) for u in attachment_urls]
 
     logger.info(
-        f"Extracted {len(attachment_urls)} attachment URL(s) from page "
+        f"Extracted {len(attachment_items)} attachment item(s) from FTIR page "
         f"(subject: {'found' if subject_text else 'not found'})"
     )
 
@@ -639,7 +643,9 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
         "page_url": base_url,
         "subject_text": subject_text,
         "attachment_urls": attachment_urls,
+        "attachment_items": attachment_items,
         "page_title": page_title,
+        "ftir_metadata": dom_metadata,
     }
 
 
@@ -1652,11 +1658,14 @@ def download_attachment(
     cookies: dict,
     url: str,
     save_dir: str,
+    filename: Optional[str] = None,
+    fallback_url: Optional[str] = None,
     timeout: int = 60,
     driver = None,
 ) -> Optional[str]:
     """
-    Download a single attachment using the browser session's cookies.
+    Download a single attachment using the browser session's cookies,
+    with automatic fallback to thumbnail URLs and in-browser fetch.
 
     Parameters
     ----------
@@ -1667,8 +1676,14 @@ def download_attachment(
         Direct URL of the attachment to download.
     save_dir : str
         Local directory to save the file into.
+    filename : str, optional
+        Explicit filename (e.g. baleno11.jpg). If None, derived from response/URL.
+    fallback_url : str, optional
+        Fallback URL (e.g. thumbnail endpoint) if primary URL fails.
     timeout : int
         HTTP request timeout in seconds.
+    driver : webdriver.Edge, optional
+        Active WebDriver instance for in-browser fetch fallback.
 
     Returns
     -------
@@ -1676,26 +1691,47 @@ def download_attachment(
         Absolute path of the saved file, or None if download failed.
     """
     os.makedirs(save_dir, exist_ok=True)
+    raw_content: Optional[bytes] = None
+    target_filename = filename
 
+    # ── Attempt 1: Direct HTTP GET on Primary URL ──────────────────────
     try:
-        resp = requests.get(url, cookies=cookies, stream=True, timeout=timeout)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        logger.error(f"Download failed for {url}: {e}")
-        return None
+        resp = requests.get(url, cookies=cookies, timeout=timeout)
+        ct = resp.headers.get("Content-Type", "").lower()
+        if resp.status_code == 200 and len(resp.content) > 100 and "text/html" not in ct:
+            raw_content = resp.content
+            if not target_filename:
+                target_filename = _filename_from_response(resp, url)
+    except Exception as e:
+        logger.debug(f"Direct request failed for {url}: {e}")
 
-    ct = resp.headers.get("Content-Type", "").lower()
-    if "text/html" in ct and driver is not None:
-        logger.info(f"URL returned an HTML viewer page. Using Selenium element-screenshot fallback for: {url}")
-        original_window = driver.current_window_handle
+    # ── Attempt 2: Fallback URL HTTP GET (e.g. Thumbnail) ──────────────
+    if not raw_content and fallback_url:
         try:
+            resp_fb = requests.get(fallback_url, cookies=cookies, timeout=timeout)
+            ct_fb = resp_fb.headers.get("Content-Type", "").lower()
+            if resp_fb.status_code == 200 and len(resp_fb.content) > 100 and "text/html" not in ct_fb:
+                raw_content = resp_fb.content
+                if not target_filename:
+                    target_filename = _filename_from_response(resp_fb, fallback_url)
+        except Exception as e:
+            logger.debug(f"Fallback request failed for {fallback_url}: {e}")
+
+    # ── Attempt 3: In-Session Browser Fetch via JavaScript ──────────────
+    if not raw_content and driver is not None:
+        logger.info(f"Attempting in-session browser fetch for: {url}")
+        raw_content = _download_via_browser_fetch(driver, url)
+        if not raw_content and fallback_url:
+            logger.info(f"Attempting in-session browser fetch for fallback: {fallback_url}")
+            raw_content = _download_via_browser_fetch(driver, fallback_url)
+
+    # ── Attempt 4: Selenium Element Screenshot Fallback (if HTML viewer) ─
+    if not raw_content and driver is not None:
+        try:
+            original_window = driver.current_window_handle
             driver.switch_to.new_window('tab')
             driver.get(url)
-            import time
-            time.sleep(3) # Wait for viewer to render image
-            
-            # Find the largest image on the page
-            from selenium.webdriver.common.by import By
+            time.sleep(2)
             imgs = driver.find_elements(By.TAG_NAME, "img")
             largest_img = None
             max_area = 0
@@ -1708,39 +1744,46 @@ def download_attachment(
                         largest_img = img
                 except Exception:
                     pass
-            
             if largest_img and max_area > 5000:
-                filename = _filename_from_response(resp, url)
-                if not filename.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    filename += ".png"
-                filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
-                save_path = os.path.join(save_dir, filename)
-                
-                # Avoid overwriting
+                if not target_filename:
+                    target_filename = "viewer_screenshot.png"
+                save_path = os.path.join(save_dir, target_filename)
                 base, ext = os.path.splitext(save_path)
                 counter = 1
                 while os.path.exists(save_path):
                     save_path = f"{base}_{counter}{ext}"
                     counter += 1
-                
                 largest_img.screenshot(save_path)
-                logger.info(f"  Screenshot extracted from viewer: {filename}")
+                logger.info(f"  Screenshot extracted from viewer: {os.path.basename(save_path)}")
                 return save_path
-            else:
-                logger.warning("Could not find a prominent image in the viewer page.")
         except Exception as e:
-            logger.error(f"Failed to screenshot viewer page: {e}")
+            logger.debug(f"Viewer screenshot fallback issue: {e}")
         finally:
-            driver.close()
-            driver.switch_to.window(original_window)
+            try:
+                driver.close()
+                driver.switch_to.window(original_window)
+            except Exception:
+                pass
 
-    filename = _filename_from_response(resp, url)
+    if not raw_content or len(raw_content) < 100:
+        logger.warning(f"Failed to download valid image from {url}")
+        return None
+
+    # Derive sensible filename
+    if not target_filename:
+        parsed = urlparse(url)
+        path_base = os.path.basename(parsed.path)
+        if "." in path_base:
+            target_filename = path_base
+        else:
+            target_filename = "attachment.jpg"
+
     # Sanitize filename
-    filename = re.sub(r'[<>:"/\\|?*]', "_", filename)
+    target_filename = re.sub(r'[<>:"/\\|?*]', "_", target_filename)
+    if not any(target_filename.lower().endswith(ext) for ext in [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".pdf", ".xlsx"]):
+        target_filename += ".jpg"
 
-    save_path = os.path.join(save_dir, filename)
-
-    # Avoid overwriting — append counter if file exists
+    save_path = os.path.join(save_dir, target_filename)
     base, ext = os.path.splitext(save_path)
     counter = 1
     while os.path.exists(save_path):
@@ -1748,11 +1791,10 @@ def download_attachment(
         counter += 1
 
     with open(save_path, "wb") as f:
-        for chunk in resp.iter_content(chunk_size=8192):
-            f.write(chunk)
+        f.write(raw_content)
 
     file_size = os.path.getsize(save_path)
-    logger.info(f"  Downloaded: {filename} ({file_size:,} bytes)")
+    logger.info(f"  ✓ Saved attachment: {os.path.basename(save_path)} ({file_size:,} bytes)")
     return save_path
 
 
@@ -1771,40 +1813,10 @@ def process_ftir(
 
     Creates ``<base_save_dir>/<ftir_no>/`` and downloads every attachment
     found on the FTIR detail page into it.
-
-    **Resumability**: if the target folder already exists and contains at
-    least one file, the FTIR is skipped entirely (returns cached info).
-
-    Parameters
-    ----------
-    driver : webdriver.Edge
-        Active Selenium WebDriver with a logged-in session.
-    ftir_no : str
-        Unique FTIR record identifier (used as folder name).
-    url : str
-        Full URL of the FTIR detail page.
-    base_save_dir : str
-        Root directory under which per-FTIR folders are created.
-
-    Returns
-    -------
-    dict
-        ``{
-            "ftir_no": str,
-            "url": str,
-            "save_dir": str,
-            "subject_text": str or None,
-            "downloaded_files": List[str],
-            "attachment_urls": List[str],
-            "skipped": bool,
-        }``
     """
     save_dir = os.path.join(base_save_dir, str(ftir_no))
 
-    import shutil
     # ── Force Fresh Download ───────────────────────────────────────────
-    # The user requested to fix the issue from the root to ensure it ALWAYS
-    # downloads automatically, avoiding confusion from aggressive local caching.
     if os.path.isdir(save_dir):
         logger.info(f"FTIR {ftir_no}: Clearing existing cached files for fresh download")
         for f in os.listdir(save_dir):
@@ -1817,59 +1829,65 @@ def process_ftir(
 
     extraction_source = "None"
     attachment_urls = []
-    page_info = {"subject_text": None}
+    downloaded: List[str] = []
+    page_info = {"subject_text": None, "ftir_metadata": {}}
 
-    # ── PRIMARY STRATEGY: Excel Response Form Download & Image Extraction ──
-    logger.info(f"FTIR {ftir_no}: [PRIMARY STRATEGY] Extracting images via FTIR Response Form Excel...")
-    extracted_images = extract_via_response_form(driver, ftir_no, save_dir, url=url)
-    
-    if extracted_images:
-        extraction_source = "Excel Response Form"
-        downloaded = extracted_images
-        logger.info(f"FTIR {ftir_no}: ✓ Response Form strategy succeeded with {len(downloaded)} image(s)")
-    else:
-        logger.warning(f"FTIR {ftir_no}: Response Form yielded no images. Attempting DOM scraping fallback...")
-        if url and url.startswith("http"):
-            try:
-                page_info = extract_ftir_page(driver, url, ftir_no=ftir_no)
-                attachment_urls = page_info["attachment_urls"]
-                if attachment_urls:
-                    extraction_source = "Hyperlink"
-            except Exception as e:
-                logger.debug(f"Direct page extract fallback exception: {e}")
+    # ── Ensure we are on the FTIR Detail Page ──────────────────────────
+    if not _is_on_ftir_detail_page(driver):
+        logger.info(f"FTIR {ftir_no}: Navigating to detail page via Quick Search...")
+        _navigate_to_ftir_detail_via_quick_search(driver, ftir_no)
 
-        if not attachment_urls:
-            fallback_info = search_and_extract_ftir(driver, ftir_no)
-            attachment_urls = fallback_info["attachment_urls"]
-            if attachment_urls:
-                extraction_source = "Quick Search"
-            if fallback_info.get("subject_text"):
-                page_info["subject_text"] = fallback_info["subject_text"]
+    # ── PRIMARY STRATEGY: Live SIFT Detail Page DOM & Entity Extraction ─
+    logger.info(f"FTIR {ftir_no}: [PRIMARY STRATEGY] Extracting live DOM entities & photos...")
+    try:
+        page_info = extract_ftir_page(driver, url or driver.current_url, ftir_no=ftir_no)
+        attachment_items = page_info.get("attachment_items", [])
+        attachment_urls = page_info.get("attachment_urls", [])
 
-        cookies = _get_browser_cookies_for_requests(driver)
-        downloaded: List[str] = []
-        for i, att_url in enumerate(attachment_urls):
-            logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_urls)}")
-            try:
-                saved = download_attachment(cookies, att_url, save_dir, driver=driver)
-                if saved:
-                    downloaded.append(saved)
-            except Exception as e:
-                logger.error(f"Error downloading attachment {att_url}: {e}")
-            if i < len(attachment_urls) - 1:
-                time.sleep(_REQUEST_DELAY)
+        if attachment_items:
+            cookies = _get_browser_cookies_for_requests(driver)
+            for i, item in enumerate(attachment_items):
+                logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_items)}")
+                try:
+                    saved = download_attachment(
+                        cookies=cookies,
+                        url=item["url"],
+                        save_dir=save_dir,
+                        filename=item.get("filename"),
+                        fallback_url=item.get("fallback_url"),
+                        driver=driver,
+                    )
+                    if saved:
+                        downloaded.append(saved)
+                except Exception as e:
+                    logger.error(f"Error downloading attachment {item.get('url')}: {e}")
+                if i < len(attachment_items) - 1:
+                    time.sleep(_REQUEST_DELAY)
 
-    logger.info(
-        f"FTIR {ftir_no}: {len(downloaded)} attachments saved to {save_dir}"
-    )
+            if downloaded:
+                extraction_source = "SIFT Live Detail Page"
+                logger.info(f"FTIR {ftir_no}: ✓ Live detail page strategy succeeded with {len(downloaded)} image(s)")
+    except Exception as e:
+        logger.warning(f"FTIR {ftir_no}: Live DOM extraction exception: {e}")
 
-    # ── Extract structured metadata from saved Response Form Excel ──────
-    ftir_metadata = {}
+    # ── SECONDARY STRATEGY: FTIR Response Form Excel Download ──────────
+    if not downloaded:
+        logger.info(f"FTIR {ftir_no}: [SECONDARY STRATEGY] Attempting FTIR Response Form Excel extraction...")
+        extracted_images = extract_via_response_form(driver, ftir_no, save_dir, url=url)
+        if extracted_images:
+            extraction_source = "Excel Response Form"
+            downloaded = extracted_images
+            logger.info(f"FTIR {ftir_no}: ✓ Response Form strategy succeeded with {len(downloaded)} image(s)")
+
+    # ── Extract structured metadata from saved Response Form Excel if available ─
+    ftir_metadata = page_info.get("ftir_metadata", {})
     response_form_path = os.path.join(save_dir, f"{ftir_no}_response_form.xlsx")
     if os.path.isfile(response_form_path):
         try:
-            ftir_metadata = extract_metadata_from_xlsx(response_form_path)
-            # Use extracted subject if we didn't find one from page scraping
+            excel_meta = extract_metadata_from_xlsx(response_form_path)
+            for k, v in excel_meta.items():
+                if v and not ftir_metadata.get(k):
+                    ftir_metadata[k] = v
             if not page_info["subject_text"] and ftir_metadata.get("subject"):
                 page_info["subject_text"] = ftir_metadata["subject"]
         except Exception as e:
@@ -1878,11 +1896,15 @@ def process_ftir(
     # ── Clean up leftover popup windows ────────────────────────────────
     _close_extra_windows(driver)
 
+    logger.info(
+        f"FTIR {ftir_no}: {len(downloaded)} attachments saved to {save_dir} (Source: {extraction_source})"
+    )
+
     return {
         "ftir_no": ftir_no,
         "url": url,
         "save_dir": save_dir,
-        "subject_text": page_info["subject_text"],
+        "subject_text": page_info.get("subject_text"),
         "downloaded_files": downloaded,
         "attachment_urls": attachment_urls,
         "skipped": False,
