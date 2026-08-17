@@ -562,8 +562,8 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
         cat = ent["file_category"]
         fname = ent["filename"]
         
-        full_url = f"{base_sift}/ftirWebFile.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}"
-        thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}"
+        full_url = f"{base_sift}/ftirWebFile.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}&timeZoneOffset=-330"
+        thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={doc_id}&fileSequence={seq}&fileCategory={cat}&timeZoneOffset=-330"
 
         if not fname:
             fname = f"{doc_id}_{cat}_{seq}.jpg"
@@ -1197,24 +1197,60 @@ def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
         logger.debug(f"Binary carving finished with: {e}")
     
     return extracted
+def _is_on_ftir_detail_page(driver: webdriver.Edge, switch_if_found: bool = True) -> bool:
+    """
+    Check if ANY open browser window is an FTIR detail page.
+    If switch_if_found is True and a detail window is found but is not
+    the current window, automatically switch to it.
+    """
+    def _check_current_window() -> bool:
+        try:
+            cur_url = driver.current_url.lower()
+            cur_title = driver.title.lower()
+            # Negative checks — these are NOT detail pages
+            if "syqaa710" in cur_url or "menu" in cur_title:
+                return False
+            if "login" in cur_url or "auth" in cur_url:
+                return False
+            # A file download URL is not a detail page either
+            if "ftirwebfile.do" in cur_url or "ftirwebthumbnail.do" in cur_url:
+                return False
+            # Positive checks
+            if "syqaa090" in cur_url:
+                return True
+            if "ftir" in cur_title and "menu" not in cur_title:
+                return True
+            if len(driver.find_elements(By.ID, "PYQAA030E00S")) > 0:
+                return True
+        except Exception:
+            pass
+        return False
 
+    # First check current window
+    if _check_current_window():
+        return True
 
+    # If not found, scan ALL other windows
+    if switch_if_found:
+        try:
+            original_handle = driver.current_window_handle
+            for handle in driver.window_handles:
+                if handle == original_handle:
+                    continue
+                try:
+                    driver.switch_to.window(handle)
+                    if _check_current_window():
+                        logger.info(f"Found FTIR detail page in window: {handle}")
+                        return True
+                except Exception:
+                    continue
+            # If no detail window found, switch back to original
+            driver.switch_to.window(original_handle)
+        except Exception:
+            pass
 
-            
-def _is_on_ftir_detail_page(driver: webdriver.Edge) -> bool:
-    """Check if the browser is currently positioned on an FTIR detail page."""
-    try:
-        cur_url = driver.current_url.lower()
-        cur_title = driver.title.lower()
-        if "syqaa710" in cur_url or "menu" in cur_title or "login" in cur_url or "auth" in cur_url:
-            return False
-        if "syqaa090" in cur_url or "ftir" in cur_title or "detail" in cur_title:
-            return True
-        if len(driver.find_elements(By.ID, "PYQAA030E00S")) > 0:
-            return True
-    except Exception:
-        pass
     return False
+
 
 
 def extract_via_response_form(
@@ -1570,18 +1606,29 @@ def download_attachment(
     raw_content: Optional[bytes] = None
     target_filename = filename
 
-    # ── Attempt 1: Direct HTTP GET on Primary URL ──────────────────────
-    try:
-        resp = requests.get(url, cookies=cookies, timeout=timeout)
-        ct = resp.headers.get("Content-Type", "").lower()
-        if resp.status_code == 200 and len(resp.content) > 100 and "text/html" not in ct:
-            raw_content = resp.content
-            if not target_filename:
-                target_filename = _filename_from_response(resp, url)
-    except Exception as e:
-        logger.debug(f"Direct request failed for {url}: {e}")
+    # ── Attempt 1 (BEST): In-Session Browser Fetch via JavaScript ──────
+    # This preserves all SSO/Kerberos auth, session cookies, and CSRF tokens
+    # that external requests.get() cannot replicate behind enterprise SSO.
+    if driver is not None:
+        logger.info(f"Attempting in-session browser fetch for: {url}")
+        raw_content = _download_via_browser_fetch(driver, url)
+        if not raw_content and fallback_url:
+            logger.info(f"Attempting in-session browser fetch for fallback: {fallback_url}")
+            raw_content = _download_via_browser_fetch(driver, fallback_url)
 
-    # ── Attempt 2: Fallback URL HTTP GET (e.g. Thumbnail) ──────────────
+    # ── Attempt 2: Direct HTTP GET on Primary URL ──────────────────────
+    if not raw_content:
+        try:
+            resp = requests.get(url, cookies=cookies, timeout=timeout)
+            ct = resp.headers.get("Content-Type", "").lower()
+            if resp.status_code == 200 and len(resp.content) > 100 and "text/html" not in ct:
+                raw_content = resp.content
+                if not target_filename:
+                    target_filename = _filename_from_response(resp, url)
+        except Exception as e:
+            logger.debug(f"Direct request failed for {url}: {e}")
+
+    # ── Attempt 3: Fallback URL HTTP GET (e.g. Thumbnail) ──────────────
     if not raw_content and fallback_url:
         try:
             resp_fb = requests.get(fallback_url, cookies=cookies, timeout=timeout)
@@ -1592,14 +1639,6 @@ def download_attachment(
                     target_filename = _filename_from_response(resp_fb, fallback_url)
         except Exception as e:
             logger.debug(f"Fallback request failed for {fallback_url}: {e}")
-
-    # ── Attempt 3: In-Session Browser Fetch via JavaScript ──────────────
-    if not raw_content and driver is not None:
-        logger.info(f"Attempting in-session browser fetch for: {url}")
-        raw_content = _download_via_browser_fetch(driver, url)
-        if not raw_content and fallback_url:
-            logger.info(f"Attempting in-session browser fetch for fallback: {fallback_url}")
-            raw_content = _download_via_browser_fetch(driver, fallback_url)
 
     # ── Attempt 4: Selenium Element Screenshot Fallback (if HTML viewer) ─
     if not raw_content and driver is not None:
@@ -1709,9 +1748,12 @@ def process_ftir(
     page_info = {"subject_text": None, "ftir_metadata": {}}
 
     # ── Ensure we are on the FTIR Detail Page ──────────────────────────
-    if not _is_on_ftir_detail_page(driver):
+    # _is_on_ftir_detail_page scans ALL windows and auto-switches if found
+    if not _is_on_ftir_detail_page(driver, switch_if_found=True):
         logger.info(f"FTIR {ftir_no}: Navigating to detail page via Quick Search...")
         _navigate_to_ftir_detail_via_quick_search(driver, ftir_no)
+    else:
+        logger.info(f"FTIR {ftir_no}: ✓ Already on FTIR detail page")
 
     # ── PRIMARY STRATEGY: FTIR Response Form Excel Download ──────────
     logger.info(f"FTIR {ftir_no}: [PRIMARY STRATEGY] Attempting FTIR Response Form Excel extraction...")
