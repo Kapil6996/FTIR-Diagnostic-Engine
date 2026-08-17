@@ -618,9 +618,9 @@ def extract_ftir_page(driver: webdriver.Edge, url: str, ftir_no: str = None) -> 
     if not attachment_items and ftir_no:
         logger.info(f"Generating predictable SIFT attachment URLs for {ftir_no}...")
         for category in range(1, 4):
-            for sequence in range(1, 11):
-                full_url = f"{base_sift}/ftirWebFile.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}"
-                thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}"
+            for sequence in range(1, 6):
+                full_url = f"{base_sift}/ftirWebFile.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}&timeZoneOffset=-330"
+                thumb_url = f"{base_sift}/ftirWebThumbnail.do?documentId={ftir_no}&fileCategory={category}&fileSequence={sequence}&timeZoneOffset=-330"
                 if full_url not in seen_urls:
                     seen_urls.add(full_url)
                     attachment_urls.append(full_url)
@@ -1713,47 +1713,52 @@ def process_ftir(
         logger.info(f"FTIR {ftir_no}: Navigating to detail page via Quick Search...")
         _navigate_to_ftir_detail_via_quick_search(driver, ftir_no)
 
-    # ── PRIMARY STRATEGY: Live SIFT Detail Page DOM & Entity Extraction ─
-    logger.info(f"FTIR {ftir_no}: [PRIMARY STRATEGY] Extracting live DOM entities & photos...")
+    # ── PRIMARY STRATEGY: FTIR Response Form Excel Download ──────────
+    logger.info(f"FTIR {ftir_no}: [PRIMARY STRATEGY] Attempting FTIR Response Form Excel extraction...")
     try:
-        page_info = extract_ftir_page(driver, url or driver.current_url, ftir_no=ftir_no)
-        attachment_items = page_info.get("attachment_items", [])
-        attachment_urls = page_info.get("attachment_urls", [])
-
-        if attachment_items:
-            cookies = _get_browser_cookies_for_requests(driver)
-            for i, item in enumerate(attachment_items):
-                logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_items)}")
-                try:
-                    saved = download_attachment(
-                        cookies=cookies,
-                        url=item["url"],
-                        save_dir=save_dir,
-                        filename=item.get("filename"),
-                        fallback_url=item.get("fallback_url"),
-                        driver=driver,
-                    )
-                    if saved:
-                        downloaded.append(saved)
-                except Exception as e:
-                    logger.error(f"Error downloading attachment {item.get('url')}: {e}")
-                if i < len(attachment_items) - 1:
-                    time.sleep(_REQUEST_DELAY)
-
-            if downloaded:
-                extraction_source = "SIFT Live Detail Page"
-                logger.info(f"FTIR {ftir_no}: ✓ Live detail page strategy succeeded with {len(downloaded)} image(s)")
-    except Exception as e:
-        logger.warning(f"FTIR {ftir_no}: Live DOM extraction exception: {e}")
-
-    # ── SECONDARY STRATEGY: FTIR Response Form Excel Download ──────────
-    if not downloaded:
-        logger.info(f"FTIR {ftir_no}: [SECONDARY STRATEGY] Attempting FTIR Response Form Excel extraction...")
         extracted_images = extract_via_response_form(driver, ftir_no, save_dir, url=url)
         if extracted_images:
             extraction_source = "Excel Response Form"
             downloaded = extracted_images
             logger.info(f"FTIR {ftir_no}: ✓ Response Form strategy succeeded with {len(downloaded)} image(s)")
+    except Exception as e:
+        logger.warning(f"FTIR {ftir_no}: Excel Response Form extraction exception: {e}")
+
+    # Always extract page info for metadata (and secondary fallback)
+    try:
+        page_info = extract_ftir_page(driver, url or driver.current_url, ftir_no=ftir_no)
+        attachment_items = page_info.get("attachment_items", [])
+        attachment_urls = page_info.get("attachment_urls", [])
+    except Exception as e:
+        logger.warning(f"FTIR {ftir_no}: Live DOM metadata extraction exception: {e}")
+        attachment_items = []
+        attachment_urls = []
+
+    # ── SECONDARY STRATEGY: Live SIFT Detail Page DOM & Entity Extraction ─
+    if not downloaded and attachment_items:
+        logger.info(f"FTIR {ftir_no}: [SECONDARY STRATEGY] Extracting live DOM entities & photos...")
+        cookies = _get_browser_cookies_for_requests(driver)
+        for i, item in enumerate(attachment_items):
+            logger.info(f"FTIR {ftir_no}: downloading attachment {i + 1}/{len(attachment_items)}")
+            try:
+                saved = download_attachment(
+                    cookies=cookies,
+                    url=item["url"],
+                    save_dir=save_dir,
+                    filename=item.get("filename"),
+                    fallback_url=item.get("fallback_url"),
+                    driver=driver,
+                )
+                if saved:
+                    downloaded.append(saved)
+            except Exception as e:
+                logger.error(f"Error downloading attachment {item.get('url')}: {e}")
+            if i < len(attachment_items) - 1:
+                time.sleep(_REQUEST_DELAY)
+
+        if downloaded:
+            extraction_source = "SIFT Live Detail Page"
+            logger.info(f"FTIR {ftir_no}: ✓ Live detail page strategy succeeded with {len(downloaded)} image(s)")
 
     # ── Extract structured metadata from saved Response Form Excel if available ─
     ftir_metadata = page_info.get("ftir_metadata", {})
