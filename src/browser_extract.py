@@ -838,7 +838,7 @@ def _navigate_to_ftir_detail_via_quick_search(
             break
         # Also check if any existing window has the #txtSel0 element
         for h in current_handles:
-            if h != _main_window_handle:
+            if len(driver.window_handles) > 0 and h != driver.window_handles[0]:
                 try:
                     driver.switch_to.window(h)
                     if len(driver.find_elements(By.ID, "txtSel0")) > 0:
@@ -899,7 +899,7 @@ def _navigate_to_ftir_detail_via_quick_search(
             break
         # Also check window titles / URLs for FTIR detail indicators
         for h in current_handles:
-            if h not in [_main_window_handle, quick_search_window]:
+            if h not in ([driver.window_handles[0]] if driver.window_handles else []) + [quick_search_window]:
                 try:
                     driver.switch_to.window(h)
                     cur_url = driver.current_url.lower()
@@ -1199,131 +1199,7 @@ def _extract_images_from_xlsx(xlsx_path: str, output_dir: str) -> List[str]:
     return extracted
 
 
-def extract_via_response_form(
-    driver: webdriver.Edge,
-    ftir_no: str,
-    save_dir: str,
-) -> List[str]:
-    """
-    Strategy: Click 'Go to FTIR Response Form' button on the current FTIR page,
-    which downloads an Excel file containing the attachments. Then extract
-    embedded images from the downloaded Excel.
-    
-    This is the MOST RELIABLE extraction method because it uses the portal's
-    own export functionality rather than scraping the DOM.
-    
-    Parameters
-    ----------
-    driver : webdriver.Edge
-        Active Selenium WebDriver positioned on an FTIR detail page.
-    ftir_no : str
-        FTIR number for logging.
-    save_dir : str
-        Directory to save extracted images into.
-    
-    Returns
-    -------
-    List[str]
-        List of file paths of extracted images.
-    """
-    logger.info(f"FTIR {ftir_no}: [STRATEGY: RESPONSE FORM] Attempting to find 'Go to FTIR Response Form' button...")
-    
-    # Set up a known download directory via Edge preferences
-    download_dir = _get_edge_download_dir(driver)
-    
-    # Configure Edge to download to our known directory (via CDP command)
-    try:
-        driver.execute_cdp_cmd("Page.setDownloadBehavior", {
-            "behavior": "allow",
-            "downloadPath": os.path.abspath(download_dir),
-        })
-        logger.info(f"Download directory set to: {download_dir}")
-    except Exception as e:
-        logger.warning(f"Could not set download directory via CDP: {e}")
-    
-    # Allow time for dynamic AJAX buttons to render
-    time.sleep(5)
-    
-    # Search for the "Go to FTIR Response Form" button using multiple strategies.
-    # PRIORITY 1: Exact element ID from the live portal (proven working).
-    # PRIORITY 2-N: Text-matching fallbacks in case the ID changes.
-    button_strategies = [
-        # Strategy 1 (HIGHEST): Exact element ID from proven reference script
-        "//*[@id='PYQAA030E00S']",
-        # Strategy 2: Exact text match (case-insensitive)
-        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
-        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
-        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'ftir response form')]",
-        # Strategy 3: Partial text "response form"
-        "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
-        "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
-        "//input[contains(translate(@value, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
-        # Strategy 4: Any element containing the text
-        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'go to ftir')]",
-        "//*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'response form')]",
-    ]
-    
-    def _find_button_in_context():
-        # PRIORITY 1: Try exact ID first — fastest and most reliable
-        try:
-            btn = driver.find_element(By.ID, "PYQAA030E00S")
-            if btn.is_displayed() or btn.is_enabled():
-                logger.info(f"✓ Found 'FTIR Response Form' button by exact ID #PYQAA030E00S")
-                return btn
-        except NoSuchElementException:
-            logger.debug("#PYQAA030E00S not found in current context, trying fallbacks...")
-        except Exception:
-            pass
 
-        # PRIORITY 2-N: XPath text-matching fallbacks
-        for xpath in button_strategies:
-            try:
-                elements = driver.find_elements(By.XPATH, xpath)
-                for el in elements:
-                    if el.is_displayed():
-                        logger.info(f"Found button with text: '{el.text.strip()}'")
-                        return el
-            except Exception:
-                continue
-                
-        # PRIORITY LAST: Super-aggressive JS brute-force search
-        js_script = """
-        function findButton(root) {
-            // First try the exact ID
-            var byId = document.getElementById('PYQAA030E00S');
-            if (byId) return byId;
-            
-            let elements = Array.from(root.querySelectorAll('*'));
-            elements.reverse();
-            for (let el of elements) {
-                if (el.shadowRoot) {
-                    let shadowBtn = findButton(el.shadowRoot);
-                    if (shadowBtn) return shadowBtn;
-                }
-                
-                let rawText = (el.innerText || el.value || el.title || el.alt || el.name || '').toLowerCase();
-                let text = rawText.replace(/\\s+/g, ' ').trim();
-                
-                if (text.includes('response form') || text.includes('go to ftir') || text.includes('ftir response')) {
-                    if (el.offsetWidth > 0 || el.offsetHeight > 0) {
-                        let tag = el.tagName.toUpperCase();
-                        if (['BUTTON', 'A', 'INPUT', 'IMG', 'SPAN', 'DIV', 'TD', 'LABEL', 'LI'].includes(tag)) {
-                            return el;
-                        }
-                    }
-                }
-            }
-            return null;
-        }
-        return findButton(document);
-        """
-        try:
-            btn = driver.execute_script(js_script)
-            if btn:
-                logger.info(f"JS brute-force search found button: {btn.tag_name}")
-                return btn
-        except Exception:
-            pass
             
 def _is_on_ftir_detail_page(driver: webdriver.Edge) -> bool:
     """Check if the browser is currently positioned on an FTIR detail page."""
