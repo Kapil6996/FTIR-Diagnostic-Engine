@@ -29,8 +29,23 @@ from src.pipeline import FTIR_RECORDS_DIR
 
 def _get_images_for_ftir(ftir_no: str, records_dir: str = FTIR_RECORDS_DIR) -> List[str]:
     """Return list of image file paths inside a given FTIR's attachment folder, including extracted PDF/Video frames."""
-    from src.media_normalize import get_all_images_for_ftir
     folder = os.path.join(records_dir, str(ftir_no))
+    if not os.path.isdir(folder):
+        return []
+
+    # First: directly collect any image files already in the folder
+    # (these were extracted by the pipeline and saved alongside the Excel)
+    direct_images = []
+    for fname in sorted(os.listdir(folder)):
+        if os.path.splitext(fname)[1].lower() in _IMG_EXTS:
+            fpath = os.path.join(folder, fname)
+            if os.path.isfile(fpath):
+                direct_images.append(os.path.abspath(fpath))
+    if direct_images:
+        return direct_images
+
+    # Fallback: use the full media_normalize dispatch for videos, PDFs, etc.
+    from src.media_normalize import get_all_images_for_ftir
     return get_all_images_for_ftir(folder)
 
 
