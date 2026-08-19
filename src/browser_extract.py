@@ -1477,6 +1477,18 @@ def extract_via_response_form(
     
     download_dir = _get_edge_download_dir(driver)
     
+    # Clear old Excel files from temp_downloads/ so _wait_for_download() can
+    # detect the freshly downloaded file.  Without this, Edge overwrites the
+    # previous file with the same name and _wait_for_download's baseline
+    # snapshot already contains that filename, causing a 120s timeout.
+    for old_file in os.listdir(download_dir):
+        if old_file.lower().endswith(('.xlsx', '.xls', '.xlsm', '.xlsb', '.crdownload', '.part', '.tmp')):
+            try:
+                os.remove(os.path.join(download_dir, old_file))
+                logger.debug(f"Cleared old download: {old_file}")
+            except OSError:
+                pass
+    
     # ── Step 1: Ensure browser is positioned on the FTIR detail window ──
     on_detail = _is_on_ftir_detail_page(driver)
     
