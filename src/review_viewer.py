@@ -60,7 +60,7 @@ class FtirBrowserWindow(tk.Toplevel):
     in a scrollable thumbnail gallery.
     """
 
-    def __init__(self, parent, result_df, records_dir=FTIR_RECORDS_DIR,
+    def __init__(self, parent, result_df, records_dir=None,
                  output_path: str = "", sbpr_list: Optional[List[str]] = None):
         super().__init__(parent)
         self.title("📋 FTIR Results Browser — View All Processed Records")
@@ -69,8 +69,15 @@ class FtirBrowserWindow(tk.Toplevel):
         self.configure(bg="#EAEEF3")
 
         self.result_df = result_df
-        self.records_dir = records_dir
         self.output_path = output_path
+        
+        # Dynamically set records_dir based on output_path if not explicitly provided
+        if not records_dir and output_path:
+            records_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), "ftir_records")
+        if not records_dir:
+            records_dir = FTIR_RECORDS_DIR
+            
+        self.records_dir = records_dir
         self.sbpr_list = sbpr_list or []
         self._photo_refs = []  # prevent garbage collection of PhotoImage objects
         self._current_entry = None  # currently displayed FTIR entry
@@ -327,7 +334,7 @@ class ManualReviewWindow(tk.Toplevel):
     """
 
     def __init__(self, parent, result_df, output_path: str, sbpr_list: List[str],
-                 records_dir=FTIR_RECORDS_DIR):
+                 records_dir=None):
         super().__init__(parent)
         self.title("⚠️ Manual Review — Classify Flagged FTIR Records")
         self.geometry("1150x750")
@@ -336,8 +343,15 @@ class ManualReviewWindow(tk.Toplevel):
 
         self.result_df = result_df
         self.output_path = output_path
-        self.sbpr_list = sbpr_list
+        
+        # Dynamically set records_dir based on output_path if not explicitly provided
+        if not records_dir and output_path:
+            records_dir = os.path.join(os.path.dirname(os.path.abspath(output_path)), "ftir_records")
+        if not records_dir:
+            records_dir = FTIR_RECORDS_DIR
+
         self.records_dir = records_dir
+        self.sbpr_list = sbpr_list
         self._photo_refs = []
         self._current_entry = None
 
